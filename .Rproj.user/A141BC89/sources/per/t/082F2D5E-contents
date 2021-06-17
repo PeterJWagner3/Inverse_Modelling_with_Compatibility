@@ -1,0 +1,2592 @@
+# Rossetta Stone:
+# accersi: fetch/summon
+# divido: divide!
+# expello: banish
+# mundus: clean
+# percursant: scour
+# revelare: reveal
+# scribere: write
+
+#### Data Reading & Prepartion Routines ####
+accersi_data_from_chosen_nexus_file <- function(polymorphs=T, UNKNOWN=-11, INAP=-22, rate_partition="", trend_partition="")	{
+# nexus_file_name: name of nexus file (e.g., "Phacopidae_Snow_2000.nex")
+# polymorphs: boolean, if TRUE, then recode "1,2" as "-21"; otherwise, treat as unknown
+# UNKNOWN: value substituting for "?"
+# INAP: value substituting for gap ("-")
+# rate_partitions: nameof CHARPARTITION that you want to use for dividing characters into general rate classes.
+#print("Choose the nexus file you with to analyze: ");
+nexus_file_name <- file.choose();
+nexus <- scan(file=nexus_file_name,what=character(),sep="\n");
+ml <- 0;
+#i <- 1
+
+for (i in 1:length(nexus))  {
+	nexus[i] <- mundify_nexus_text(nexus_line = nexus[i])
+	j <- strsplit(nexus[i],split="",fixed=TRUE)[[1]]
+	if (length(j)>ml) ml <- length(j)
+	}
+ml <- ml+1;	# LENGTH OF LONGEST LINE
+	
+# file is now a vector of characters.  Turn it into a matrix with one char per cell
+nexusfile <- matrix("\n",length(nexus),ml)
+for (i in 1:length(nexus))  {
+	j <- strsplit(nexus[i],split="",fixed=TRUE)[[1]]
+	for (k in 1:length(j))      nexusfile[i,k] <- j[k]
+	if ((length(j)+2)<ml)
+		for (k in (length(j)+2):ml) nexusfile[i,k] <- ""
+	}
+
+top <- 0;
+ln <- 1;		# this is the row with the word "Matrix": character data starts next.
+while (top==0)	{
+	em_nexus <- gsub("\t","",nexus[ln]);
+	nexus_words <- simplify2array(strsplit(em_nexus," ")[[1]]);
+	if (!is.na(match("matrix",tolower(nexus_words))))	{
+		top <- ln;
+		}
+	else	ln <- ln+1;
+	}
+top <- top+1;	# this will give the first row of data
+# skip the comment text denoting character numbers (if present)
+while(nexusfile[top,1]=="[" || nexusfile[top,1]==" ") top <- top+1
+
+missing <- "?";
+gap <- "-";
+notu <- nchars <- strat <- range <- geog <- 0
+for (i in 2:top)  {
+	while ((nexusfile[i,1]=="[" || nexusfile[i,1]=="\n") && i<top)	i <- i+1;
+	em_nexus <- gsub("\t","",nexus[i]);
+	em_nexus <- gsub("="," = ",em_nexus);
+	em_nexus <- gsub(";"," ; ",em_nexus);
+	em_nexus <- gsub(",","",em_nexus);
+	nexus_words <- simplify2array(strsplit(em_nexus," ")[[1]]);
+	nexus_words <- nexus_words[nexus_words!=""];
+	if (!is.na(match("ntax",tolower(nexus_words))) || !is.na(match("ntaxa",tolower(nexus_words))))	{
+		j <- 1+match("ntax",tolower(nexus_words));
+		if (is.na(j))	j <- 1+match("ntaxa",tolower(nexus_words));
+		while(nexus_words[j]=="=")	j <- j+1;
+		notu <- as.numeric(nexus_words[j]);
+		}
+	if (!is.na(match("nchar",tolower(nexus_words))) || !is.na(match("nchars",tolower(nexus_words))))	{
+		j <- 1+match("nchar",tolower(nexus_words));
+		if (is.na(j))	j <- 1+match("nchars",tolower(nexus_words));
+		while(nexus_words[j]=="=")	j <- j+1;
+		nchars <- as.numeric(nexus_words[j]);
+		}
+	if (!is.na(match("gap",tolower(nexus_words))))	{
+		j <- 1+match("gap",tolower(nexus_words));
+		while(nexus_words[j]=="=")	j <- j+1;
+		gap <- nexus_words[j];
+		}
+	if (!is.na(match("missing",tolower(nexus_words))))	{
+		j <- 1+match("missing",tolower(nexus_words));
+		while(nexus_words[j]=="=")	j <- j+1;
+		missing <- nexus_words[j];
+		}
+	if (!is.na(match("fa",tolower(nexus_words))))	{
+		strat <- as.numeric(nexus_words[match("fa",tolower(nexus_words))-1]);
+		}
+	if (!is.na(match("la",tolower(nexus_words))))	{
+		range <- as.numeric(nexus_words[match("la",tolower(nexus_words))-1]);
+		}
+	if (!is.na(match("geog",tolower(nexus_words))) || !is.na(match("geography",tolower(nexus_words))))	{
+		geog <- c(nexus_words[match("geog",tolower(nexus_words))-1],nexus_words[match("geography",tolower(nexus_words))-1]);
+		geog <- as.numeric(geog[!is.na(geog)]);
+		}
+	}
+
+extra <- 0;
+if (strat>0)	{
+	if (range>0)	{
+		nchars <- nchars-2
+		extra <- 2
+		} else {
+		nchars <- nchars-1
+		extra <- 1
+		} 
+	strat_ranges <- data.frame(FA=as.numeric(rep(0,notu)),LA=as.numeric(rep(0,notu)));
+	}
+if (geog>0)	{
+	nchars <- nchars-1
+	geography <- vector(length=notu)
+	extra <- extra+1
+	}
+	
+taxa <- vector(length=notu);
+nstates <- array(0,dim=nchars);
+chmatrix <- matrix(0,notu,nchars);
+tx <- 1;
+
+# look for outgroup designation
+exclude <- outgroup <- -1;
+if (!is.na(match("BEGIN SETS;",nexus)))	{
+	tx_pt <- match("BEGIN SETS;",nexus);	# look at taxon partitions
+	look_for_outgroup <- TRUE;
+	while (look_for_outgroup)	{
+		tx_pt <- 1+tx_pt;
+		yyy <- paste(nexusfile[tx_pt,], collapse = "");
+		yyy <- gsub("-"," - ",yyy);
+		yyy <- gsub("- "," - ",yyy);
+		yyy <- gsub("  -  "," - ",yyy);
+		yyy <- gsub(";","",yyy);
+		yyy <- gsub(","," ,",yyy);
+		yyy <- gsub("\n","",yyy);
+		yyy <- gsub("\r","",yyy);
+		yyy <- gsub("\t","",yyy);
+		xxx <- tolower(strsplit(yyy," ")[[1]]);
+		xxx <- xxx[xxx!=""];
+		if (!is.na(match("outgroup",tolower(xxx))))	{
+			ttl_ln <- length(xxx);
+			jj <- 1+match("outgroup",tolower(xxx));
+			while (xxx[jj]==":" || xxx[jj]=="=")	jj <- jj+1;
+			outgroup <- c();
+			while (xxx[jj]!="," && jj<=ttl_ln)	{
+				if (xxx[jj]=="-")	{
+					jj <- jj+1;
+					outgroup <- c(outgroup,((as.numeric(outgroup[length(outgroup)])+1):as.numeric(xxx[jj])));
+					} else	{
+					outgroup <- c(outgroup,xxx[jj]);
+					}
+				jj <- jj+1;
+				}
+			look_for_outgroup <- FALSE;
+			} else	{
+			if (tolower(nexus[tx_pt])=="end;" || tolower(nexus[tx_pt])=="\tend;")
+				look_for_outgroup <- FALSE;
+			}
+		}
+
+	# look for characters to exclude
+	tx_pt <- match("BEGIN SETS;",nexus);
+	xxx <- strsplit(paste(nexusfile[tx_pt-1,],collapse = "")," ");
+	while(tolower(xxx[1])!="end")	{
+		tx_pt <- tx_pt+1;
+		yyy <- paste(nexusfile[tx_pt,], collapse = "");
+		yyy <- gsub("- "," - ",yyy);
+		yyy <- gsub(";","",yyy);
+		yyy <- gsub(","," ,",yyy);
+		yyy <- gsub("\n","",yyy);
+		yyy <- gsub("\r","",yyy);
+		yyy <- gsub("\t","",yyy);
+		xxx <- tolower(strsplit(yyy," ")[[1]]);
+		xxx <- xxx[xxx!=""];
+		if (length(xxx)==0 || is.na(xxx))
+			xxx <- "";
+#		if (!is.na(xxx) && !is.null(xxx) && xxx!="")	{
+		if (xxx[1]=="charpartition")	{
+			if (xxx[1]=="charpartition" && !is.na(match("exclude",tolower(xxx))))	{
+				ttl_ln <- length(xxx);
+				jj <- 1+match("exclude",tolower(xxx));
+				while (xxx[jj]==":")	jj <- jj+1;
+				exclude <- c();
+				while (xxx[jj]!="," && jj<ttl_ln)	{
+					if (xxx[jj]=="-")	{
+						jj <- jj+1;
+						exclude <- c(exclude,((as.numeric(exclude[length(exclude)])+1):as.numeric(xxx[jj])));
+						} else	{
+						exclude <- c(exclude,as.numeric(xxx[jj]));
+						}
+					jj <- jj+1;
+					}
+				}
+			}
+#		xxx[1];
+#		tx_pt;
+		}
+	}
+
+# look for rate variation partitions
+if (rate_partition!="")	{
+	ln <- match("BEGIN SETS;",nexus);
+	got_splits <- F;
+	while (!got_splits)	{
+		ln <- ln+1;
+		breakup_this_line <- strsplit(nexus[ln],split=" ")[[1]];
+		if (!is.na(match(rate_partition,breakup_this_line)))	{
+			nexus[ln] <- gsub("-"," - ",nexus[ln]);	# Mesquite often puts dashes immediately after character or taxon numbers.....
+			nexus[ln] <- gsub("  -"," -",nexus[ln]);
+			nexus[ln] <- gsub("-  ","- ",nexus[ln]);
+			breakup_this_line <- strsplit(nexus[ln],split=" ")[[1]];
+			breakup_this_line <- gsub(",","",breakup_this_line);
+			breakup_this_line <- gsub(";","",breakup_this_line);
+			breakup_this_line <- breakup_this_line[breakup_this_line!=""];
+			breakup_this_line <- breakup_this_line[match(rate_partition,breakup_this_line):length(breakup_this_line)];
+			kk <- (1:length(breakup_this_line))[breakup_this_line %in% ":"];
+			partition_names <- breakup_this_line[kk-1];
+			kk <- c(kk,length(breakup_this_line)+1);	# add last numberso that we can end the partion search easily below
+			character_rate_partitions <- rep("",nchars);
+			for (pn in 1:length(partition_names))	{
+				ll <- kk[pn]+1;
+				this_part <- as.numeric(breakup_this_line[ll]);
+				ll <- ll+1;
+#				while (ll<(kk[pn+1]-1))	{
+				if (pn < length(partition_names))	{
+					break_cell <- kk[pn+1]-1;
+					} else	{
+					break_cell <- kk[pn+1];
+					}
+				while (ll<break_cell)	{
+					if (breakup_this_line[ll]=="-")	{
+						ll <- ll+1;
+						this_part <- c(this_part,as.numeric(breakup_this_line[ll-2]:as.numeric(breakup_this_line[ll])));
+						} else	{
+						this_part <- c(this_part,as.numeric(breakup_this_line[ll]));
+						}
+					ll <- ll+1;
+					}
+				character_rate_partitions[this_part] <- partition_names[pn];
+				}
+			got_splits<- T;
+			}
+		}
+	} else	character_rate_partitions <- rep("imagine",nchars);
+
+if (trend_partition!="")	{
+	ln <- match("BEGIN SETS;",nexus);
+	got_splits <- F;
+	while (!got_splits)	{
+		ln <- ln+1;
+		breakup_this_line <- strsplit(nexus[ln],split=" ")[[1]];
+		if (!is.na(match(trend_partition,breakup_this_line)))	{
+			nexus[ln] <- gsub("-"," - ",nexus[ln]);	# Mesquite often puts dashes immediately after character or taxon numbers.....
+			nexus[ln] <- gsub("  -"," -",nexus[ln]);
+			nexus[ln] <- gsub("-  ","- ",nexus[ln]);
+			breakup_this_line <- strsplit(nexus[ln],split=" ")[[1]];
+			breakup_this_line <- gsub(",","",breakup_this_line);
+			breakup_this_line <- gsub(";","",breakup_this_line);
+			breakup_this_line <- breakup_this_line[breakup_this_line!=""];
+			breakup_this_line <- breakup_this_line[match(trend_partition,breakup_this_line):length(breakup_this_line)];
+			kk <- (1:length(breakup_this_line))[breakup_this_line %in% ":"];
+			partition_names <- breakup_this_line[kk-1];
+			kk <- c(kk,length(breakup_this_line)+1);	# add last numberso that we can end the partion search easily below
+			character_trend_partitions <- rep("",nchars);
+			for (pn in 1:length(partition_names))	{
+				ll <- kk[pn]+1;
+				this_part <- as.numeric(breakup_this_line[ll]);
+				ll <- ll+1;
+#				while (ll<(kk[pn+1]-1))	{
+				if (pn < length(partition_names))	{
+					break_cell <- kk[pn+1]-1;
+					} else	{
+					break_cell <- kk[pn+1];
+					}
+				while (ll<break_cell)	{
+					if (breakup_this_line[ll]=="-")	{
+						ll <- ll+1;
+						this_part <- c(this_part,as.numeric(breakup_this_line[ll-2]:as.numeric(breakup_this_line[ll])));
+						} else	{
+						this_part <- c(this_part,as.numeric(breakup_this_line[ll]));
+						}
+					ll <- ll+1;
+					}
+				character_trend_partitions[this_part] <- partition_names[pn];
+				}
+			got_splits<- T;
+			}
+		}
+	} else	character_trend_partitions <- rep("square",nchars);
+
+state_orders <- rep("unordered",nchars);
+
+if (!is.na(match("BEGIN ASSUMPTIONS;",nexus)))	{
+	tx_pt <- 1+match("BEGIN ASSUMPTIONS;",nexus);	# look at taxon partitions
+	while (tolower(nexus[tx_pt])!="end;")	{
+#		yyy <- paste(nexusfile[tx_pt,], collapse = "");
+		yyy <- gsub("- "," - ",nexus[tx_pt]);
+		yyy <- gsub(";","",yyy);
+		yyy <- gsub(","," ,",yyy);
+		yyy <- gsub("\n","",yyy);
+		yyy <- gsub("\r","",yyy);
+		yyy <- gsub("\t","",yyy);
+		xxx <- tolower(strsplit(yyy," ")[[1]]);
+		xxx <- xxx[xxx!=""];
+		if (!is.na(match("ord:",tolower(xxx))) && !is.na(match("revbayes",tolower(xxx))))	{
+			ttl_ln <- length(xxx);
+			jj <- 1+match("ord:",xxx);
+			while (xxx[jj]==":")	jj <- jj+1;
+			ordered <- c();
+			while (xxx[jj]!="," && jj<=ttl_ln)	{
+				if (xxx[jj]=="-")	{
+					jj <- jj+1;
+					ordered <- c(ordered,((as.numeric(ordered[length(ordered)])+1):as.numeric(xxx[jj])));
+					} else	{
+					ordered <- c(ordered,as.numeric(xxx[jj]));
+					}
+				jj <- jj+1;
+				}
+			state_orders[ordered] <- "ordered";
+			}
+		tx_pt <- 1+tx_pt;
+		}
+	}
+mxln <- length(nexusfile[top,]);
+s <- top;
+# te all of the taxon names
+for (tx in 1:notu)	{
+	# first, read taxon name
+	#### look for quotations###
+	s <- top+tx-1;
+	if (nexusfile[s,1]=="'" || nexusfile[s,2]=="'")	{
+		jj <- ((1:length(nexusfile[s,]))[nexusfile[s,] %in% "'"]);
+		i <- max((1:length(nexusfile[s,]))[nexusfile[s,] %in% "'"])
+		taxa[tx] <- pracma::strcat(nexusfile[s,(jj[1]+1):(jj[2]-1)])
+		i <- i+1
+		while (nexusfile[s,i]==" " && i<ncol(nexusfile))	i <- i+1
+		}	else	{
+		i <- 1
+		if (nexusfile[s,1]!="\"")  {
+			while (nexusfile[s,i]=="\t")	i <- i+1
+			taxa[tx] <- nexusfile[s,i]
+			i <- i+1
+			while (nexusfile[s,i]!=" " && nexusfile[s,i]!='\t' && i<ncol(nexusfile))	{
+				if (nexusfile[s,i]!="_")	{
+					taxa[tx] <- paste0(taxa[tx],as.character(nexusfile[s,i]))
+					} else {
+					taxa[tx] <- paste0(taxa[tx]," ")
+					}
+				i <- i+1
+				}
+			}	else {
+			taxa[tx] <- nexusfile[s,2]
+			i <- 3
+			while (nexusfile[s,i]!=" " && nexusfile[s,i+1]!=" " && i<ncol(nexusfile))	{
+				taxa[tx] <- paste0(taxa[tx],as.character(nexusfile[s,i]))
+				i <- i+1
+				}
+			}
+		# now, get to characters
+		while ((nexusfile[s,i]==" " || nexusfile[s,i]=="\t") && i<ncol(nexusfile))
+			i <- i+1
+		}
+	k <- i;
+	endline <- match("\n",nexusfile[s,])
+	if (is.na(endline))	endline <- length(nexusfile[s,])
+	if ((endline-k)==(nchars+extra))	{
+		# true if there are no polymorphic characters for the taxon
+		dummy <- nexusfile[s,k:(endline-1)]
+		dummy[dummy==missing] <- UNKNOWN
+		dummy[dummy==gap] <- INAP
+		letterstate <- dummy
+		dummy <- sapply(letterstate,switch_letter_state_to_numeric)
+		chmatrix[tx,] <- as.numeric(dummy[1:nchars]);
+		if (strat>0)	{
+			strat_ranges$FA[tx] <- strat_ranges$LA[tx] <- as.numeric(dummy[strat])
+			if (range>0)	strat_ranges$LA[tx] <- as.numeric(dummy[range])
+			}
+		if (geog>0)	geography[tx]=as.numeric(nexusfile[geog,i])
+		for (c in 1:nchars)	{
+			if ((chmatrix[tx,c]+1)>nstates[c]) nstates[c] <- chmatrix[tx,c]+1
+			}
+		} else	{
+#		for (c in 1:(nchars+extra))	{
+		c <- 0;
+		while (c < (nchars+extra))	{
+			c <- c+1;
+			if (c<=nchars)	{
+				if (nexusfile[s,i]=="(" || nexusfile[s,i]=="{")	{
+					if (polymorphs==TRUE || polymorphs==1)	{
+						i <- i+1
+						w <- as.numeric(nexusfile[s,i])
+						chmatrix[tx,c] <- -1*as.numeric(nexusfile[s,i])
+						if ((1+w)>nstates[c])  nstates[c] <- 1+w
+						i <- i+1
+						j <- 1
+						while (nexusfile[s,i]!=")" && nexusfile[s,i]!="}" && i<ncol(nexusfile))	{
+							if (nexusfile[s,i]!="," && nexusfile[s,i]!=" ")	{
+								w <- as.numeric(nexusfile[s,i])
+								if ((w+1)>nstates[c])	nstates[c] <- w+1
+								chmatrix[tx,c] <- chmatrix[tx,c]-((10^j)*w)
+								i <- i+1
+								j <- j+1
+								} else {
+								i <- i+1
+								}
+							}
+						}	else {
+						chmatrix[tx,c] <- UNKNOWN;
+						while (nexusfile[s,i]!=')' && nexusfile[s,i]!="}")	i <- i+1;
+						}
+					} else if (nexusfile[s,i]==missing)	{
+					chmatrix[tx,c] <- UNKNOWN;
+					}	else if (nexusfile[s,i]==gap)	{
+					chmatrix[tx,c] <- INAP;
+					} else if (nexusfile[s,i]>="A" && nexusfile[s,i]<="Z")  {
+					chmatrix[tx,c] <- switch_letter_state_to_numeric(nexusfile[s,i]);
+					}	else if (nexusfile[s,i]>="0" && nexusfile[s,i]<="9") {
+					chmatrix[tx,c] <- as.numeric(nexusfile[s,i]);
+					}
+				if ((chmatrix[tx,c]+1)>nstates[c]) nstates[c] <- chmatrix[tx,c]+1
+				i <- i+1
+				}  else {
+				if (c==strat)	{
+					if (nexusfile[s,i]>="0" && nexusfile[s,i]<='9')	{
+						strat_ranges[tx,1]=as.numeric(nexusfile[s,i])
+						} else if (nexusfile[s,i]>="A" && nexusfile[s,i]<="Z")	{
+						strat_ranges[tx,1]=switch_letter_state_to_numeric(nexusfile[s,i])
+						}
+					if (range==0)	strat_ranges[tx,2] <- strat_ranges[tx,1]
+					i <- i+1
+					} else if (c==range)	{
+					if (nexusfile[s,i]>="0" && nexusfile[s,i]<='9')	{
+						strat_ranges[tx,2]=as.numeric(nexusfile[s,i])
+						} else if (nexusfile[s,i]>="A" && nexusfile[s,i]<="Z")	{
+						strat_ranges[tx,2]=switch_letter_state_to_numeric(nexusfile[s,i])
+						}
+					i <- i+1
+					} else if (c==geog)	{
+						if (nexusfile[s,i]>="0" && nexusfile[s,i]<='9')	{
+							geography[tx]=as.numeric(nexusfile[s,i])
+						} else if (nexusfile[s,i]>="A" && nexusfile[s,i]<="Z")	{
+							geography[tx]=switch_letter_state_to_numeric(nexusfile[s,i])
+						}
+					}
+				} # end non-morphological data
+#			print(nexusfile[s,k:83]);
+#			print(chmatrix[tx,])
+			if (nexusfile[s,i+1]=="\n" || i==(mxln-1)) c <- nchars+extra;
+			}
+		}
+#	chmatrix[tx,];
+#	tx <- tx+1;
+#	s <- s+1
+	}
+
+if (trend_partition!="")	print("Choose a file giving the order in which taxa appear (with low numbers = early): ");
+chmatrix <- mundify_character_matrix(chmatrix,minst=0,UNKNOWN,INAP);	# clean up coding
+if (trend_partition!="")	{
+	appearance_order_file <- file.choose();
+	appearance_order <- read.csv(appearance_order_file,header=T);
+	otu_fas <- match(appearance_order$appearance,sort(unique(appearance_order$appearance)));
+	for (nch in 1:ncol(chmatrix))	{
+		otu_states <- chmatrix[,nch];
+		chmatrix[,nch] <- rescore_states_by_first_appearances(otu_states,otu_fas,UNKNOWN,INAP);
+		}
+	}
+nstates <- count_states(chmatrix,UNKNOWN,INAP);
+
+tree_found <- 0;
+while (s<length(nexus) && tree_found==0)	{
+	while (nexus[s]!= "BEGIN TREES; " && s<length(nexus))
+		s <- s+1;
+	if (s<length(nexus))	{
+		while (tree_found==0 && s<length(nexus))	{
+			s <- s+1
+			jj <- strsplit(nexus[s],split=c("\t"," "),fixed=TRUE)[[1]];
+			jj <- paste(jj,collapse="")
+			jj <- strsplit(jj,split=" ",fixed=TRUE)[[1]];
+			if (sum(jj=="TREE")>0 || sum(jj=="tree")>0)	tree_found <- 1;
+			}
+		newick_string <- jj[length(jj)];
+		tree <- read_newick_string(newick_string);
+		tree_found <- 1
+		s <- length(nexus);
+		}
+	}
+
+row.names(chmatrix) <- taxa
+
+unscored_taxa <- c();
+for (n in 1:notu)	{
+	if (sum(chmatrix[n,]==UNKNOWN)==nchars)
+		unscored_taxa <- c(unscored_taxa,n);
+	}
+
+if (nchars<10)	{
+	colnames(chmatrix) <- 1:nchars;
+	} else if (nchars<100)	{
+	colnames(chmatrix) <- c(paste(0,(1:9),sep=""),10:nchars);
+	} else if (nchars<1000)	{
+	colnames(chmatrix) <- c(paste(00,(1:9),sep=""),paste(0,(10:99),sep=""),100:nchars);
+	}
+if (exclude[1]!=-1)	{
+	keepers <- (1:nchars)[!(1:nchars) %in% exclude];
+	chmatrix <- chmatrix[,keepers];
+	nstates <- nstates[keepers];
+	state_orders <- state_orders[keepers];
+	character_rate_partitions <- character_rate_partitions[keepers];
+	character_trend_partitions <- character_trend_partitions[keepers];
+	}
+
+if (strat!=0 && geog!=0 && tree_found==1)  {
+	output <- list(taxa,chmatrix,nstates,state_orders,strat_ranges,geography,tree,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+	names(output) <-  c("OTUs","Matrix","States","State_Order","Stratigraphic_Ranges","Geography","Tree","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+	} else if (strat!=0)  {
+	if (geog!=0)  {
+		output <- list(taxa,chmatrix,nstates,state_orders,strat_ranges,geography,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+		names(output) <-  c("OTUs","Matrix","States","State_Order","Stratigraphic_Ranges","Geography","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+		} else if (tree_found!=0)	{
+		output <- list(taxa,chmatrix,nstates,state_orders,strat_ranges,tree,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+		names(output) <-  c("OTUs","Matrix","States","State_Order","Stratigraphic_Ranges","Tree","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+		} else	{
+		output <- list(taxa,chmatrix,nstates,state_orders,strat_ranges,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+		names(output) <-  c("OTUs","Matrix","States","State_Order","Stratigraphic_Ranges","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+		}
+	} else if (geog!=0)  {
+	if (tree_found!=0)	{
+		output <- list(taxa,chmatrix,nstates,state_orders,geography,tree,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+		names(output) <-  c("OTUs","Matrix","States","State_Order","Geography","Tree","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+		} else	{
+		output <- list(taxa,chmatrix,nstates,state_orders,geography,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+		names(output) <-  c("OTUs","Matrix","States","State_Order","Geography","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+		}
+	} else if (tree_found!=0) {
+	output <- list(taxa,chmatrix,nstates,state_orders,tree,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+	names(output) <-  c("OTUs","Matrix","States","State_Order","Tree","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+	} else	{
+	output <- list(taxa,chmatrix,nstates,state_orders,outgroup,unscored_taxa,character_rate_partitions,character_trend_partitions);
+	names(output) <-  c("OTUs","Matrix","States","State_Order","Outgroup","Unscored_Taxa","Rate_Partitions","Trend_Partitions");
+	}
+
+return(output)
+}
+
+#### convert (1,(2,3)) to vector_tree = 4 5 5 -1 4
+#### 	where number is the htu number of the clade to which a species or htu belong
+read_newick_string <- function(newick_string) {
+nodes <- 0;
+if (length(newick_string)==1)	newick_string <- strsplit(newick_string,split="",fixed=TRUE)[[1]];
+for (i in 1:length(newick_string))		if (newick_string[i]=="(")	nodes <- nodes+1;
+# get clades
+clades <- vector(length=nodes);
+for (c in 1:nodes)	clades[c] <- c;
+# get taxa
+notu <- p <- 0
+for (i in 1:length(newick_string))	{
+	if (newick_string[i]>="0" && newick_string[i]<="9")	{
+		otu <- as.numeric(newick_string[i])+(otu * (10^p))
+		p <- p+1
+		if (otu>notu)	notu <- otu
+		} else {
+		p <- otu <- 0
+		}
+	}
+vector_tree <- vector(length=notu+max(clades))
+for (c in 1:nodes)	clades[c] <- -1
+cl <- c <- 0
+i <- 1
+for (i in 1:length(newick_string))	{
+	if (newick_string[i]=="(")	{
+		sp <- p <- 0
+		cl <- cl+1
+		if (cl>1)	{
+			vector_tree[notu+cl] <- clades[c]+notu
+			} else vector_tree[notu+1] <- -1
+		c <- c+1
+		clades[c] <- cl
+		} else if (newick_string[i]==")")	{
+		c <- c-1
+		sp <- p <- 0
+		} else if (newick_string[i]==",")	{
+		sp <- p <- 0
+		} else if (newick_string[i]>="0" && newick_string[i]<="9")	{
+		sp <- as.numeric(newick_string[i])+(sp*(10^p))
+		p <- p+1
+		if (newick_string[i+1]<"0" || newick_string[i]>"9")	vector_tree[sp] <- notu+clades[c]
+		}
+	}
+
+return(vector_tree)
+}
+
+mundify_nexus_text <- function(nexus_line)	{
+nexus_line <- gsub("\xd4","",nexus_line);
+nexus_line <- gsub("\xd5","",nexus_line);
+nexus_line <- gsub("\x87","a",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x98\x93\xa0\xbc","ae",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x99\x83\xa0\xbc","c",nexus_line);
+nexus_line <- gsub("\x8e","e",nexus_line);
+nexus_line <- gsub("\x8f","e",nexus_line);
+nexus_line <- gsub("\x92","i",nexus_line);
+nexus_line <- gsub("\xbf","o",nexus_line);
+nexus_line <- gsub("\x9a","o",nexus_line);
+nexus_line <- gsub("\x97","o",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x8e\x93\xa4\xbc","o",nexus_line);
+nexus_line <- gsub("\x9f","ue",nexus_line);
+nexus_line <- gsub("\xd0","-",nexus_line);
+nexus_line <- gsub("\xd2","\"",nexus_line);
+nexus_line <- gsub("\xd3","\"",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x8d\x86\x90\xbc","\'",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x8d\x86\x8c\xbc","ƒ",nexus_line);
+nexus_line <- gsub("\xa7","ß",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x8c\xa6\x88\xbc","≤",nexus_line);
+nexus_line <- gsub("\xb3","≥",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x8d\x96\x8c\xbc","≈",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x98\xa6\x98\xbc","˚",nexus_line);
+nexus_line <- gsub("\xb6","∂",nexus_line);
+nexus_line <- gsub("\xc6","∆",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x8d\xb6\x88\xbc","∑",nexus_line);
+nexus_line <- gsub("\xfc\xbe\x99\x86\x88\xbc","Ω",nexus_line);
+nexus_line <- gsub("\xa5"," ",nexus_line);
+#nexus_line <- gsub("“","\"",nexus_line);
+#nexus_line <- gsub("”","\"",nexus_line);
+nexus_line <- gsub("Á","A",nexus_line);
+nexus_line <- gsub("Ä","A",nexus_line);
+nexus_line <- gsub("ä","a",nexus_line);
+nexus_line <- gsub("á","a",nexus_line);
+nexus_line <- gsub("å","a",nexus_line);
+nexus_line <- gsub("Ç","C",nexus_line);
+nexus_line <- gsub("ç","c",nexus_line);
+nexus_line <- gsub("č","c",nexus_line);
+nexus_line <- gsub("é","e",nexus_line);
+nexus_line <- gsub("è","e",nexus_line);
+nexus_line <- gsub("ê","e",nexus_line);
+nexus_line <- gsub("ė","e",nexus_line);
+nexus_line <- gsub("î","i",nexus_line);
+nexus_line <- gsub("Î","I",nexus_line);
+nexus_line <- gsub("ñ","n",nexus_line);
+nexus_line <- gsub("Ö","O",nexus_line);
+nexus_line <- gsub("Ø","O",nexus_line);
+nexus_line <- gsub("ø","o",nexus_line);
+nexus_line <- gsub("ó","o",nexus_line);
+nexus_line <- gsub("ö","o",nexus_line);
+nexus_line <- gsub("õ","o",nexus_line);
+nexus_line <- gsub("Š","S",nexus_line);
+nexus_line <- gsub("š","s",nexus_line);
+nexus_line <- gsub("ů","u",nexus_line);
+nexus_line <- gsub("ü","u",nexus_line);
+nexus_line <- gsub("’","’",nexus_line);
+	#nexus_line <- gsub("’","\\'",,nexus_line)
+nexus_line <- gsub("\x88","a",nexus_line);
+nexus_line <- gsub("Ã„","A",nexus_line);
+nexus_line <- gsub("Á","A",nexus_line);
+nexus_line <- gsub("Ã¡","a",nexus_line);
+nexus_line <- gsub("Ã¤","a",nexus_line);
+nexus_line <- gsub("Ã¥","a",nexus_line);
+nexus_line <- gsub("Ã§","c",nexus_line);
+nexus_line <- gsub("Ã©","e",nexus_line);
+nexus_line <- gsub("Ã¨","e",nexus_line);
+nexus_line <- gsub("Ã±","n",nexus_line);
+nexus_line <- gsub("Ã–","O",nexus_line);
+nexus_line <- gsub("Ã¸","o",nexus_line);
+nexus_line <- gsub("Ã¶","o",nexus_line);
+nexus_line <- gsub("Ãµ","o",nexus_line);
+nexus_line <- gsub("Ã´","o",nexus_line);
+nexus_line <- gsub("Ã¼","u",nexus_line);
+nexus_line <- gsub("√Æ","i",nexus_line);
+nexus_line <- gsub("≈†","S",nexus_line);
+nexus_line <- gsub("≈°","s",nexus_line);
+nexus_line <- gsub("√•","a",nexus_line);
+nexus_line <- gsub("&#367;","u",nexus_line);
+nexus_line <- gsub("&#945;","α",nexus_line);
+return(nexus_line);
+}
+
+mundify_character_matrix <- function(chmatrix,minst=0,UNKNOWN=-11,INAP=-22)	{
+notu <- nrow(chmatrix)	# replaces spc to standardize coding.
+nchars <- ncol(chmatrix)
+for (ch in 1:nchars)	{
+#ch <- 0
+#while (ch<=nchars)	{
+#	ch <- ch+1;
+	rem <- c((1:notu)[chmatrix[,ch]==UNKNOWN],(1:notu)[chmatrix[,ch]==INAP]);
+	relv <- (1:notu)[!(1:notu) %in% rem];
+	relv_np <- relv[chmatrix[relv,ch]>=0];
+	relv_pl <- relv[chmatrix[relv,ch]<0];
+	if (length(relv)>0)	{
+		test <- chmatrix[relv_np,ch];
+		coded <- sort(unique(test[test>=0]));
+		if (length(relv_pl)>0)	{
+			polystates <- c();
+			for (rp in relv_pl)	{
+				polystates <- c(polystates,unravel_polymorph(poly=chmatrix[rp,ch]));
+				}
+			polystates <- sort(unique(polystates));
+			coded <- sort(unique(c(coded,polystates)));
+			}
+		new_codes <- (1:length(coded))+(minst-1);
+		chmatrix[relv_np,ch] <- new_codes[match(chmatrix[relv_np,ch],coded)];
+		if (length(relv_pl)>0)	{
+			for (rp in relv_pl)	{
+				polycode <- unravel_polymorph(poly=chmatrix[rp,ch]);
+				newpolycode <- new_codes[match(polycode,coded)];
+				chmatrix[rp,ch] <- ravel_polymorph(newpolycode);
+				}
+			}
+		}
+	}
+return(chmatrix)
+}
+
+count_states <- function(chmatrix,UNKNOWN=-11,INAP=-22)	{
+nchars <- ncol(chmatrix);
+nstates <- c();
+for (ch in 1:nchars)	{
+	char_states <- sort(unique(chmatrix[,ch]));
+	char_states <- char_states[char_states!=UNKNOWN];
+	char_states <- char_states[char_states!=INAP];
+	if (sum(char_states<0)>0)	{
+		while (char_states[1]<0)	{
+			char_states <- unique(c(char_states,unravel_polymorph(char_states[1])))[2:length(char_states)];
+			}
+		}
+	nstates <- c(nstates,length(char_states));
+	}
+return(nstates);
+}
+
+#### Tree Reading/Manipulation/Storage ####
+accersi_fossil_record_summary_from_paleotree_output <- function(fossil_record)	{
+true_history <- fossilRecord2fossilTaxa(fossil_record);	# extract origins, ancestors, durations & other information;
+nTotalTaxa <- nrow(true_history);
+sampling_history <- matrix(0,nrow(true_history),1);
+sepkoski <- data.frame(FAD=as.numeric(rep(0,nrow(true_history))),LAD=as.numeric(rep(0,nrow(true_history))));
+for (i in 1:length(fossil_record))	{
+	if (length(fossil_record[[i]]$sampling.times)>ncol(sampling_history))	{
+		dummy <- matrix(0,nTotalTaxa,length(fossil_record[[i]]$sampling.times)-ncol(sampling_history))
+		sampling_history <- cbind(sampling_history,dummy);
+		}
+	if (length(fossil_record[[i]]$sampling.times)>0)	{
+		sampling_history[i,1:length(fossil_record[[i]]$sampling.times)] <- fossil_record[[i]]$sampling.times;
+		}
+	if (max(sampling_history[i,])>0)	{
+		sepkoski$FAD[i] <- max(sampling_history[i,]);
+		sepkoski$LAD[i] <- min(sampling_history[i,sampling_history[i,]>0]);
+		}
+	}
+output <- list(sepkoski,sampling_history);
+names(output) <- c("strat_ranges","sampling_history");
+return(output);
+}
+
+accersi_vector_tree_from_paleotree_output <- function(simulated_history)	{
+node_ancestors <- sort(unique(simulated_history$ancestor.id));
+notu <- nrow(simulated_history);
+nNodes <- length(node_ancestors);
+htus <- (1:nNodes)+notu;
+vector_tree <- vector(length=notu+nNodes);
+vector_tree[1:notu] <- notu+match(simulated_history$ancestor.id,node_ancestors)
+vector_tree[(notu+1):(notu+nNodes)] <- notu+match(simulated_history$ancestor.id[node_ancestors],node_ancestors);
+vector_tree[node_ancestors] <- notu+match(node_ancestors,node_ancestors);
+vector_tree[notu+1] <- -1;
+return(vector_tree);
+}
+
+accersi_vector_tree_and_ancestors_from_paleotree_output <- function(fossil_record)	{
+# returns 2 vectors:
+# vector_tree: ancestor of each simulated species
+# node_ancestor: which species each node represents
+simulated_history <- data.frame(fossilRecord2fossilTaxa(fossil_record),stringsAsFactors = F);
+node_ancestors <- sort(unique(simulated_history$ancestor.id));
+notu <- nrow(simulated_history);
+nNodes <- length(node_ancestors);
+htus <- (1:nNodes)+notu;
+vector_tree <- vector(length=notu+nNodes);
+vector_tree[1:notu] <- notu+match(simulated_history$ancestor.id,node_ancestors)
+vector_tree[(notu+1):(notu+nNodes)] <- notu+match(simulated_history$ancestor.id[node_ancestors],node_ancestors);
+vector_tree[node_ancestors] <- notu+match(node_ancestors,node_ancestors);
+vector_tree[notu+1] <- -1;
+#vector_tree[1:notu]
+output <- list(vector_tree,node_ancestors);
+names(output) <- c("vector_tree","node_ancestors");
+return(output);
+}
+
+transform_vector_tree_to_venn_tree <- function(vector_tree)	{
+ohtu <- length(vector_tree);
+base <- match(-1,vector_tree);
+otu <- base-1;
+htu <- ohtu-otu;
+venn_tree <- matrix(0,ohtu,otu)
+for (i in 1:otu)	venn_tree[base,i] <- i
+
+node_rich <- vector(length=ohtu);
+for (sp in otu:1)	if (vector_tree[sp]!=0)					node_rich[vector_tree[sp]] <- node_rich[vector_tree[sp]]+1
+for (nd in ohtu:(base+1))	if (vector_tree[nd]>0)	node_rich[vector_tree[nd]] <- node_rich[vector_tree[nd]]+node_rich[nd]
+node_div <- vector(length=ohtu)
+for (sp in 1:otu)	{
+	node_div[vector_tree[sp]] <- node_div[vector_tree[sp]]+1
+	venn_tree[vector_tree[sp],node_div[vector_tree[sp]]] <- sp
+	}
+
+for (nd in ohtu:(base+1))	{
+	anc <- vector_tree[nd]
+	for (i in 1:node_div[nd])	{
+		node_div[anc] <- node_div[anc]+1
+		venn_tree[anc,node_div[anc]] <- venn_tree[nd,i]
+		}
+	}
+#venn_tree[base:ohtu,1:15]
+
+return(venn_tree[base:ohtu,])
+}
+
+transform_vector_tree_to_matrix_tree <- function(vector_tree)	{
+node_rosetta <- sort(unique(vector_tree[vector_tree>0]))
+Nnodes <- length(node_rosetta)
+maxtomy <- max((hist(vector_tree[vector_tree>1],breaks=((min(vector_tree[vector_tree>1])-1):max(vector_tree[vector_tree>1])),plot=FALSE)$counts))
+#order(vector_tree)[2:length(vector_tree)]
+node_rich <- vector(length=Nnodes)
+matrix_tree <- matrix(0,Nnodes,maxtomy)
+for (i in 1:length(vector_tree))	{
+	node <- match(vector_tree[i],node_rosetta)
+	if(!is.na(node))	{
+		node_rich[node] <- node_rich[node]+1
+		matrix_tree[node,node_rich[node]] <- i
+		}
+#	if (vector_tree[i]>=node_rosetta[1])	{
+#		node <- match(vector_tree[i],node_rosetta)
+#		node_rich[node] <- node_rich[node]+1
+#		matrix_tree[node,node_rich[node]] <- i
+#		}
+	}
+return(matrix_tree)
+}
+
+tally_node_richness_from_vector_tree <- function(vector_tree)	{
+vntree <- transform_vector_tree_to_venn_tree(vector_tree);
+node_richness <- c();
+for (nd in 1:nrow(vntree))
+	node_richness <- c(node_richness,sum(vntree[nd,]>0));
+return(node_richness);
+}
+
+accersi_poss_ancestors_for_nodes <- function(vector_tree,FA,apomorphies)	{
+notu <- min(vector_tree[vector_tree>0])-1;
+node_poss_anc <- rep(0,length(vector_tree));
+# create two vectors with 1 indicating possible ancestor based on no apomorphies and right age
+likely_anc <- ((1:notu)*((1-apomorphies[1:notu]) * (1*(FA[vector_tree[1:notu]]==FA[1:notu]))))
+node_poss_anc[vector_tree[likely_anc[likely_anc>0]]] <- likely_anc[likely_anc>0];
+return(node_poss_anc);
+#if (!is.na(apomorphies[1]))
+#	for (n in 1:notu)
+#		if (apomorphies[n]==0)	
+#			if (node_poss_anc[vector_tree[n]]==0)	{
+#				node_poss_anc[vector_tree[n]] <- n;
+#				} else	if (FA[node_poss_anc[vector_tree[n]]] > FA[n])	FA[node_poss_anc[vector_tree[n]]] <- FA[n]
+#return(node_poss_anc)
+}
+
+#fossil_record_plus <- cbind(simulated_history,strat_ranges)
+accersi_sampled_only_vector_tree_from_paleo_tree_old <- function(fossil_record_plus)	{
+# basic procedure: create a Venn-Diagram tree and eliminate the unsampled taxa, then reduce it to just the sampled taxa; extract vector tree from that.
+
+sampled_taxa <- (1:nrow(fossil_record_plus))[fossil_record_plus$FAD!=0];
+sampled_richness <- length(sampled_taxa);
+vector_tree <- accersi_vector_tree_from_paleotree_output(simulated_history=fossil_record_plus)
+venn_tree_orig <- transform_vector_tree_to_venn_tree(vector_tree);
+
+sampled_original_nodes <- original_ancestor <- sampled_node_richness <- node_names <- c();
+venn_tree_sampled <- matrix(0,nrow=0,ncol=sampled_richness);
+for (nn in 1:nrow(venn_tree_orig))	{
+	fossil_reps <- venn_tree_orig[nn,venn_tree_orig[nn,] %in% sampled_taxa];
+	if (length(fossil_reps)>0)	{
+		sampled_original_nodes <- c(sampled_original_nodes,nn);
+		original_ancestor <- c(original_ancestor,venn_tree_orig[nn,1]);
+		sampled_node_richness <- c(sampled_node_richness,length(fossil_reps));
+		node_names <- c(node_names,(paste(fossil_reps,collapse=",")));
+		fossil_reps <- c(fossil_reps,rep(0,sampled_richness-length(fossil_reps)));
+		venn_tree_sampled <- rbind(venn_tree_sampled,fossil_reps);
+#		print(c(sampled_node_richness[nrow(venn_tree_sampled)],venn_tree_sampled[nrow(venn_tree_sampled),1:10]));
+		}
+	nn <- nn+1;
+	}
+ancestral_origination <- fossil_record_plus$orig.time[original_ancestor];	# divergence of the original ancestor of a node;
+ancestral_extinction <- fossil_record_plus$ext.time[original_ancestor];		# extinction of the original ancestor of a node;
+sampled_taxon_divergences <- orig_divergences <- fossil_record_plus$orig.time[sampled_taxa];	# divergences of sampled taxa
+sampled_taxon_extinctions <- fossil_record_plus$ext.time[sampled_taxa];		# extinctions of sampled taxa
+
+# two step reduction. First, use the node_names string to identify the same rows.  Tally the lumped ancestors as you do.
+unique_node_names <- unique(node_names);
+keepers <- match(unique_node_names,node_names);
+srepeek <- 1+length(node_names)-match(unique_node_names,node_names[length(node_names):1]);	# match things in reverse to get latest examples
+total_branches_2 <- rep(1,sampled_richness);	# give all species a branch length of 1;
+total_branches_2[(1:sampled_richness)[sampled_taxa %in% original_ancestor]] <- 0;	# make ancestors 0: the node will take over.
+for (un in 1:length(unique_node_names))
+	total_branches_2 <- c(total_branches_2,sum(node_names==unique_node_names[un]));
+
+venn_tree_sampled_2 <- venn_tree_sampled[keepers,];
+original_ancestor_2 <- original_ancestor[keepers];
+ancestral_origination_2 <- fossil_record_plus$orig.time[original_ancestor_2];
+ancestral_extinction_2 <- fossil_record_plus$ext.time[original_ancestor[srepeek]];
+sampled_original_nodes_2 <- sampled_original_nodes[keepers];
+node_names_2 <- node_names[keepers];
+node_divergences <- fossil_record_plus$orig.time[original_ancestor_2];	# set the nodes to their earliest member after compression
+sampled_node_richness_2 <- sampled_node_richness[keepers];
+
+# now, compress singletons: they get the origin time of their first "node"
+compressed_ancestors_singletons <- original_ancestor_2[sampled_node_richness_2==1]	# original ancestors of nodes with only one sampled species
+sampled_singletons <- match(venn_tree_sampled_2[sampled_node_richness_2==1,1],sampled_taxa)	# connect to sampled taxa;
+# put divergence times of singletons with their unsampled ancestor's divergence times
+sampled_taxon_divergences[sampled_singletons] <- fossil_record_plus$orig.time[compressed_ancestors_singletons];
+# remove rows with just one species
+venn_tree_sampled_3 <- venn_tree_sampled_2[sampled_node_richness_2>1,];
+sampled_nodes <- nrow(venn_tree_sampled_3);
+original_ancestor_3 <- original_ancestor_2[sampled_node_richness_2>1];
+ancestral_origination_3 <- ancestral_origination_2[sampled_node_richness_2>1];
+ancestral_extinction_3 <- ancestral_extinction_2[sampled_node_richness_2>1];
+sampled_original_nodes_3 <- sampled_original_nodes_2[sampled_node_richness_2>1];
+
+# use the name strings to find out how many unsampled ancestors single species have.
+species_only_names <- node_names_2[sampled_node_richness_2==1];
+unique_species_only_names <- unique(species_only_names);
+species_only_numbers <- venn_tree_sampled_2[sampled_node_richness_2==1,1];
+for (us in 1:length(unique_species_only_names))
+	total_branches_2[match(species_only_numbers[us],sampled_taxa)] <- total_branches_2[match(species_only_numbers[us],sampled_taxa)]+sum(species_only_names==unique_species_only_names[us]);
+# eliminate nodes containing only one sampled species
+total_branches_3 <- total_branches_2[sampled_node_richness_2>1];
+
+sampled_ancestors <- sampled_taxa[sampled_taxa %in% original_ancestor_3];							# these are the OTU numbers for the sampled tree
+unobserved_nodes <- sampled_richness+(1:sampled_nodes)[!original_ancestor_3 %in% sampled_taxa];		# these are the HTU numbers for the sampled tree
+observed_nodes <- sampled_richness+(1:sampled_nodes)[original_ancestor_3 %in% sampled_taxa];		# these are the HTU numbers for the sampled tree
+htu_nos <- sampled_richness+(1:sampled_nodes);														# 
+unobserved_htus <- htu_nos[!original_ancestor_3 %in% sampled_taxa];
+observed_htus <- htu_nos[original_ancestor_3 %in% sampled_taxa];
+unsampled_ancestor_orig_nos <- original_ancestor_3[!original_ancestor_3 %in% sampled_taxa];
+node_original_species_nos <- original_ancestor_3;
+
+venn_tree <- matrix(0,nrow=0,ncol=sampled_richness);
+sampled_dummy <- c(0,sampled_taxa);
+for (nn in 1:sampled_nodes)
+	venn_tree <- rbind(venn_tree,match(venn_tree_sampled_3[nn,],sampled_dummy)-1);
+vector_tree <- transform_venn_tree_to_vector_tree(venn_tree);
+mxtree <- transform_vector_tree_to_matrix_tree(vector_tree);
+	
+all_divergence <- c(sampled_taxon_divergences,ancestral_origination_3);
+all_extinction <- c(sampled_taxon_extinctions,ancestral_extinction_3);
+
+# now, because we have budding models sometimes, let's make sure that sister species with unsampled ancestors have common divergence times.
+node_nos <- sort(c(observed_htus,unobserved_htus));
+for (nn in nrow(venn_tree):1)	{
+	htu_number <- nn+sampled_richness;
+	if (node_nos[nn] %in% unobserved_htus)	{
+		f1 <- mxtree[nn,mxtree[nn,]!=0];
+		all_extinction[htu_number] <- all_divergence[f1] <- max(all_divergence[f1]);
+		}
+	}
+
+sampled_durations <- data.frame(origination=as.numeric(all_divergence),extinction=as.numeric(all_extinction),stringsAsFactors = F);
+#cbind(node_original_species_nos,ancestral_origination_2,ancestral_extinction_2)
+
+output <- list(vector_tree,venn_tree,sampled_durations,sampled_taxa,sampled_ancestors,match(sampled_ancestors,sampled_taxa),observed_nodes,unobserved_nodes,observed_htus,unobserved_htus,unsampled_ancestor_orig_nos,node_original_species_nos,sampled_original_nodes_3,total_branches_3);
+#output <-     list(vector_tree,venn_tree,sampled_durations,sampled_taxa,sampled_ancestors,match(sampled_ancestors,sampled_taxa),unsampled_nodes,unsampled_ancestor_orig_nos,node_original_species_nos,sampled_original_nodes_3);
+names(output) <- c("vector_tree","venn_tree","durations","sampled_taxa","sampled_ancestors_orig_no","sampled_ancestral_otus","observed_nodes_orig","unobserved_nodes_orig","observed_nodes_red","unobserved_nodes_red","unsampled_ancestors_orig_no","node_orig_species_no","original_node_no","total_branches");
+return(output);
+}
+
+accersi_sampled_only_vector_tree_from_paleo_tree <- function(fossil_record_plus)	{
+# basic procedure: create a Venn-Diagram tree and eliminate the unsampled taxa, then reduce it to just the sampled taxa; extract vector tree from that.
+
+sampled_taxa <- (1:nrow(fossil_record_plus))[fossil_record_plus$FAD!=0];
+sampled_richness <- length(sampled_taxa);
+vector_tree <- accersi_vector_tree_from_paleotree_output(simulated_history=fossil_record_plus)
+venn_tree_orig <- transform_vector_tree_to_venn_tree(vector_tree);
+
+sampled_original_nodes <- original_ancestor <- sampled_node_richness <- node_names <- c();
+venn_tree_sampled <- matrix(0,nrow=0,ncol=sampled_richness);
+for (nn in 1:nrow(venn_tree_orig))	{
+	fossil_reps <- venn_tree_orig[nn,venn_tree_orig[nn,] %in% sampled_taxa];
+	if (length(fossil_reps)>0)	{
+		sampled_original_nodes <- c(sampled_original_nodes,nn);
+		original_ancestor <- c(original_ancestor,venn_tree_orig[nn,1]);
+		sampled_node_richness <- c(sampled_node_richness,length(fossil_reps));
+		node_names <- c(node_names,(paste(fossil_reps,collapse=",")));
+		fossil_reps <- c(fossil_reps,rep(0,sampled_richness-length(fossil_reps)));
+		venn_tree_sampled <- rbind(venn_tree_sampled,fossil_reps);
+#		print(c(sampled_node_richness[nrow(venn_tree_sampled)],venn_tree_sampled[nrow(venn_tree_sampled),1:10]));
+		}
+	nn <- nn+1;
+	}
+ancestral_origination <- fossil_record_plus$orig.time[original_ancestor];	# divergence of the original ancestor of a node;
+ancestral_extinction <- fossil_record_plus$ext.time[original_ancestor];		# extinction of the original ancestor of a node;
+sampled_taxon_divergences <- orig_divergences <- fossil_record_plus$orig.time[sampled_taxa];	# divergences of sampled taxa
+sampled_taxon_extinctions <- fossil_record_plus$ext.time[sampled_taxa];		# extinctions of sampled taxa
+
+# two step reduction. First, use the node_names string to identify the same rows.  Tally the lumped ancestors as you do.
+unique_node_names <- unique(node_names);
+keepers <- match(unique_node_names,node_names);
+srepeek <- 1+length(node_names)-match(unique_node_names,node_names[length(node_names):1]);	# match things in reverse to get latest examples
+total_branches_2 <- rep(1,sampled_richness);	# give all species a branch length of 1;
+total_branches_2[(1:sampled_richness)[sampled_taxa %in% original_ancestor]] <- 0;	# make ancestors 0: the node will take over.
+for (un in 1:length(unique_node_names))
+	total_branches_2 <- c(total_branches_2,sum(node_names==unique_node_names[un]));
+
+venn_tree_sampled_2 <- venn_tree_sampled[keepers,];
+original_ancestor_2 <- original_ancestor[keepers];
+ancestral_origination_2 <- fossil_record_plus$orig.time[original_ancestor_2];
+ancestral_extinction_2 <- fossil_record_plus$ext.time[original_ancestor[srepeek]];
+sampled_original_nodes_2 <- sampled_original_nodes[keepers];
+node_names_2 <- node_names[keepers];
+node_divergences <- fossil_record_plus$orig.time[original_ancestor_2];	# set the nodes to their earliest member after compression
+sampled_node_richness_2 <- sampled_node_richness[keepers];
+
+# now, compress singletons: they get the origin time of their first "node"
+compressed_ancestors_singletons <- original_ancestor_2[sampled_node_richness_2==1]	# original ancestors of nodes with only one sampled species
+sampled_singletons <- match(venn_tree_sampled_2[sampled_node_richness_2==1,1],sampled_taxa)	# connect to sampled taxa;
+# put divergence times of singletons with their unsampled ancestor's divergence times
+sampled_taxon_divergences[sampled_singletons] <- fossil_record_plus$orig.time[compressed_ancestors_singletons];
+# remove rows with just one species
+venn_tree_sampled_3 <- venn_tree_sampled_2[sampled_node_richness_2>1,];
+sampled_nodes <- nrow(venn_tree_sampled_3);
+original_ancestor_3 <- original_ancestor_2[sampled_node_richness_2>1];
+ancestral_origination_3 <- ancestral_origination_2[sampled_node_richness_2>1];
+ancestral_extinction_3 <- ancestral_extinction_2[sampled_node_richness_2>1];
+sampled_original_nodes_3 <- sampled_original_nodes_2[sampled_node_richness_2>1];
+
+# use the name strings to find out how many unsampled ancestors single species have.
+species_only_names <- node_names_2[sampled_node_richness_2==1];
+unique_species_only_names <- unique(species_only_names);
+species_only_numbers <- venn_tree_sampled_2[sampled_node_richness_2==1,1];
+for (us in 1:length(unique_species_only_names))
+	total_branches_2[match(species_only_numbers[us],sampled_taxa)] <- total_branches_2[match(species_only_numbers[us],sampled_taxa)]+sum(species_only_names==unique_species_only_names[us]);
+# eliminate nodes containing only one sampled species
+total_branches_3 <- total_branches_2[sampled_node_richness_2>1];
+
+sampled_ancestors <- sampled_taxa[sampled_taxa %in% original_ancestor_3];							# these are the OTU numbers for the sampled tree
+unobserved_nodes <- sampled_richness+(1:sampled_nodes)[!original_ancestor_3 %in% sampled_taxa];		# these are the HTU numbers for the sampled tree
+observed_nodes <- sampled_richness+(1:sampled_nodes)[original_ancestor_3 %in% sampled_taxa];		# these are the HTU numbers for the sampled tree
+htu_nos <- sampled_richness+(1:sampled_nodes);														# 
+unobserved_htus <- htu_nos[!original_ancestor_3 %in% sampled_taxa];
+observed_htus <- htu_nos[original_ancestor_3 %in% sampled_taxa];
+unsampled_ancestor_orig_nos <- original_ancestor_3[!original_ancestor_3 %in% sampled_taxa];
+node_original_species_nos <- original_ancestor_3;
+
+venn_tree <- matrix(0,nrow=0,ncol=sampled_richness);
+sampled_dummy <- c(0,sampled_taxa);
+for (nn in 1:sampled_nodes)
+	venn_tree <- rbind(venn_tree,match(venn_tree_sampled_3[nn,],sampled_dummy)-1);
+vector_tree <- transform_venn_tree_to_vector_tree(venn_tree);
+mxtree <- transform_vector_tree_to_matrix_tree(vector_tree);
+	
+all_divergence <- c(sampled_taxon_divergences,ancestral_origination_3);
+all_extinction <- c(sampled_taxon_extinctions,ancestral_extinction_3);
+
+# now, because we have budding models sometimes, let's make sure that sister species with unsampled ancestors have common divergence times.
+node_nos <- sort(c(observed_htus,unobserved_htus));
+for (nn in nrow(venn_tree):1)	{
+	htu_number <- nn+sampled_richness;
+	if (node_nos[nn] %in% unobserved_htus)	{
+		f1 <- mxtree[nn,mxtree[nn,]!=0];
+		all_extinction[htu_number] <- all_divergence[f1] <- max(all_divergence[f1]);
+		}
+	}
+
+sampled_durations <- data.frame(origination=as.numeric(all_divergence),extinction=as.numeric(all_extinction),stringsAsFactors = F);
+#cbind(node_original_species_nos,ancestral_origination_2,ancestral_extinction_2)
+
+output <- list(vector_tree,venn_tree,sampled_durations,sampled_taxa,sampled_ancestors,match(sampled_ancestors,sampled_taxa),observed_nodes,unobserved_nodes,observed_htus,unobserved_htus,unsampled_ancestor_orig_nos,node_original_species_nos,sampled_original_nodes_3,total_branches_3);
+#output <-     list(vector_tree,venn_tree,sampled_durations,sampled_taxa,sampled_ancestors,match(sampled_ancestors,sampled_taxa),unsampled_nodes,unsampled_ancestor_orig_nos,node_original_species_nos,sampled_original_nodes_3);
+names(output) <- c("vector_tree","venn_tree","durations","sampled_taxa","sampled_ancestors_orig_no","sampled_ancestral_otus","observed_nodes_orig","unobserved_nodes_orig","observed_nodes_red","unobserved_nodes_red","unsampled_ancestors_orig_no","node_orig_species_no","original_node_no","total_branches");
+return(output);
+}
+
+transform_venn_tree_to_vector_tree <- function (venn_tree)	{
+Nnode <- nrow(venn_tree);
+notus <- ncol(venn_tree);
+max_otus <- max(venn_tree)
+base <- max_otus+1
+ctree <- vector(length=(max_otus+Nnode))
+otus <- sort(venn_tree[1,])
+for (s in 1:notus)	{
+	spc <- otus[s]
+	ctree[spc] <- max_otus+sort(which(venn_tree==spc,arr.ind=TRUE)[,1],decreasing=TRUE)[1]
+	}
+ctree[base] <- -1
+ctree[base+1] <- base
+for (n in 3:Nnode)	{
+	htu <- max_otus+n
+	lead <- venn_tree[n,1]
+	ctree[htu] <- max_otus+sort(which(venn_tree[1:(n-1),]==lead,arr.ind=TRUE)[,1],decreasing=TRUE)[1]
+	}
+return(ctree)
+}
+
+get_possible_branches_for_character <- function(chmatrix,ch,sampled_taxa,branchings,rich,ab,UNKNOWN=-11,INAP=-22)	{
+poss_brs <- length(ab)
+pab <- vector(length=poss_brs)
+a <- 1
+for (b in 1:poss_brs)	{
+	if (ab[b]<=sampled_taxa)	{
+		s <- ab[b]
+		if (chmatrix[s,ch]!=UNKNOWN && chmatrix[s,ch]!=INAP)	{
+#			for (z in 1:branchings[s])	{
+				pab[a] <- s
+				a <- a+1
+#				}	# add each speciation for the branch
+			}	# case where species is scored
+#		b <- b+(branchings[s]-1)
+		} else {
+		ndx <- ab[b]-sampled_taxa
+		accept <- 0
+		for (r in 1:rich[ndx])	{
+			s <- venn_tree[ndx,r]
+			if (chmatrix[s,ch]!=UNKNOWN && chmatrix[s,ch]!=INAP)	{
+				accept <- 1
+				r <- rich[ndx]
+				}	# case where a clade member is scored
+			}
+		if (accept==1)	{
+#			for (z in 1:branchings[nd+sampled_taxa])	{
+				pab[a] <- ndx+sampled_taxa
+				a <- a+1
+#				}	# add each speciation
+			}
+#		b <- b+(branchings[nd+sampled_taxa]-1)
+		}	# end case of node
+	}
+return(pab)
+}
+
+#get_possible_branches_for_all_characters            (simchmatrix,branchings,ab,venn_tree) # possible available branches matrix
+get_possible_branches_for_all_characters <- function(simchmatrix,branchings,ab,venn_tree,UNKNOWN=-11,INAP=-22)	{
+# find branches on which each character can change.  (Accommodates unknowns & inapplicables)
+# simchmatrix: character matrix
+# branchings: 
+# rich: number of nodes
+# ab: number of available branches (e.g., some scored states above it)
+nchars <- ncol(simchmatrix);
+notu <- nrow(simchmatrix);
+poss_brs <- length(ab)
+pabm <- matrix(0,nchars,poss_brs)
+for (ch in 1:nchars)	{
+	a <- 1
+	for (b in 1:poss_brs)	{
+		if (ab[b]<=notu)	{
+			s <- ab[b]
+			if (simchmatrix[s,ch]!=UNKNOWN && simchmatrix[s,ch]!=INAP)	{
+				pabm[ch,a]<-s
+				a <- a+1
+				}	# case where species is scored
+			} else {
+			nda <- ab[b]-notu  ### PROBLEM APPEARS HERE!!!!
+			accept <- 0
+##			  for (r in 1:rich[nda])	{
+			for (r in 1:sum(venn_tree[nda,]>0))	{
+				s <- venn_tree[nda,r]
+				if (simchmatrix[s,ch]!=UNKNOWN && simchmatrix[s,ch]!=INAP)	{
+					accept <- 1
+				  	r <- sum(venn_tree[nda,])
+					}	# case where a clade member is scored
+				}
+			if (accept==1)	{
+				pabm[ch,a]<-nda+notu
+				a <- a+1
+				}
+			}	# end case of node
+		}
+	}
+char_names <- vector(length=nchars)
+for (c in 1:nchars)	{
+	if (nchars<100)	{
+		if (c<10)	{
+			char_names[c] <- paste("ch_0",c,sep="")
+			}	else	{
+			char_names[c] <- paste("ch_",c,sep="")	
+			}
+		}	else	{
+		if (c<10)	{
+			char_names[c] <- paste("ch_00",c,sep="")
+			} else if (c<100)	{
+			char_names[c] <- paste("ch_0",c,sep="")
+			}	else	{
+			char_names[c] <- paste("ch_",c,sep="")
+			}
+		}
+	}
+
+brnch_names <- vector(length=poss_brs)
+for (b in 1:poss_brs)	{
+	if (poss_brs<100)	{
+		if (b<10)	{
+			brnch_names[b] <- paste("br_0",b,sep="")
+			}	else	{
+			brnch_names[b] <- paste("br_",b,sep="")	
+			}
+		}	else	{
+		if (b<10)	{
+			brnch_names[b] <- paste("br_00",b,sep="")
+			} else if (c<100)	{
+			brnch_names[b] <- paste("br_0",b,sep="")
+			}	else	{
+			brnch_names[b] <- paste("br_",b,sep="")
+			}
+		}
+	}
+rownames(pabm) <- char_names
+colnames(pabm) <- brnch_names
+return(pabm)
+}
+
+#### Character Change ####
+evolve_ordered_character_over_tree <- function(venn_tree,starting_state=0,pstasis=1/3)	{
+# venn_tree: venn matrix giving all descendants of the first species listed in each row
+# starting state: venn matrix giving all descendants of the first species listed in each row
+# p_stasis: probability of no change	
+continuous_char <- vector(length=ncol(venn_tree))	# set up a vector
+ichanges <- runif(ncol(venn_tree));
+changes  <- 1*vector(length=ncol(venn_tree));
+changes[ichanges<=(1-pstasis)/2] <- -1;
+changes[ichanges>=(1-((1-pstasis)/2))] <- 1;
+for (nn in 2:nrow(venn_tree))	{
+	f1 <- venn_tree[nn,venn_tree[nn,]>0];
+	continuous_char[f1] <- continuous_char[f1[1]]+changes[nn];
+	}
+return(continuous_char)
+}
+
+evolve_continuous_character_over_tree_normal <- function(venn_tree,starting_state=0)	{
+continuous_char <- vector(length=ncol(venn_tree))	# set up a vector
+changes <- c(0,rnorm(ncol(venn_tree)-1));
+for (nn in 2:nrow(venn_tree))	{
+	f1 <- venn_tree[nn,venn_tree[nn,]>0];
+	continuous_char[f1] <- continuous_char[f1[1]]+changes[nn];
+	}
+return(continuous_char)
+}
+
+evolve_compatibility_over_N_changes <- function(N,init_chmatrix,venn_tree,branchings,nchars,states,types,hidden_reversals=TRUE,UNKNOWN=-11,INAP=-22,repl=1,fuzzy=F,zero_length_branches=F)	{
+# N: maximum number of steps
+# venn_tree: a tree giving all of the observed descendants (direct & indirect)
+# branchings: length of each branch
+# nchars: number of characters
+# states: number of states for each character
+# types: types for each character (0: unordered; 1: ordered)
+# hidden_reversals: if true, then character can change 2+ times per sampled branch
+# UNKNOWN: numeric code for "?"
+# INAP: numeric code for "-"
+# repl: replication number
+notu <- ncol(venn_tree);	# number of observed taxa in tree
+nodes <- nrow(venn_tree);
+#simchmatrix <- matrix(0,notu,nchars)
+simchmatrix <- init_chmatrix;
+simchmatrix[simchmatrix>0] <- 0	# added 2017-08-10
+# get those branches where there can be change (sampled ancestors are zero, with nodal branch ≥ 1)
+unique_ab <- (1:length(branchings))[branchings>0]
+#ab <- vector(length=branches)		# available branches, with branches with 2+ species listed 2+ times
+
+# each branch gets one additional representative per unsampled ancestor.
+# 		With perfect sampling, all taxa are entered once.
+ab <- c()
+for (b in 1:length(unique_ab))	{
+	br <- unique_ab[b]
+	ab <- c(ab,rep(br,branchings[br]))
+	}
+tb <- sum(branchings)
+fb <- length(unique_ab)		# free branches, with each branch that can change listed only once
+bcc <- matrix(0,nchars,fb)	# branch changes per character
+st_rich <- matrix(0,nchars,max(states))	# richness of each state
+
+mx_ch <- count_scored_otu_per_character(chmatrix=simchmatrix)
+
+rich <- vector(length=nodes);
+for (n in 1:nodes)  rich[n] <- sum(venn_tree[n,]>0);
+# for (n in 1:nodes)  rich[n] <- length(subset(venn_tree[n,],venn_tree[n,]>0))
+pabm <- get_possible_branches_for_all_characters(simchmatrix,branchings,ab,venn_tree); # possible available branches matrix
+pcc <- vector(length=nchars)  # possible character changes
+for (ch in 1:nchars)  {
+	# scramble order in which branches are sampled
+	if (hidden_reversals==TRUE)	{
+		x <- permute(subset(pabm[ch,],pabm[ch,]>0))
+		}	else	{
+		x <- unique(permute(subset(pabm[ch,],pabm[ch,]>0)))
+		}
+	pcc[ch] <- length(x)
+	pabm[ch,1:pcc[ch]] <- x
+	}
+
+# first, make sure that all states appear
+branch_changes <- vector(length=notu+nodes)
+char_changes <- vector(length=nchars)
+simcompat <- vector(length=N)
+for (ch in 1:nchars)	{
+	if (states[ch]>=2)	{
+    	use_br <- sort(pabm[ch,1:(states[ch]-1)],decreasing=TRUE)   # do high nodes first, then low nodes, then otus
+		for (c in 1:(states[ch]-1))	{
+			br <- use_br[c]
+			if (br<=notu)	{
+				simchmatrix[br,ch] <- c
+				} else {
+				ndd <- br-notu
+				for (r in 1:rich[ndd])	{
+					s <- venn_tree[ndd,r]
+					if (simchmatrix[s,ch]==0)	simchmatrix[s,ch] <- c
+					}
+				}
+			char_changes[ch] <- 1+char_changes[ch]
+			branch_changes[br] <- branch_changes[br]+1
+			}	# add state c to matrix
+		}	# only do variant characters
+	}
+
+simstates <- vector(length=nchars)
+for (ch in 1:nchars)	simstates[ch] <- sum(unique(simchmatrix[,ch])>=0)
+
+# makes sure that all branches have 1+ change
+# branch_changes[unique(ab)]
+#  PUT THIS ROUTINE IN OTHER MODULES!
+if (!zero_length_branches)	{
+	if (sum(branch_changes[unique_ab]==0)>0)	{
+		needy <- unique(ab)[branch_changes[unique(ab)]==0]
+		nb <- length(needy)
+		for (b in 1:nb)	{
+			# get first branch in need of a change
+			br <- needy[b]
+			# target characters where it would change earliest
+			candidates <- which(pabm==br,arr.ind=TRUE)
+			cn <- 1
+			ch <- candidates[cn,1]
+			while (states[ch]<2
+				   || char_changes[ch]>=mx_ch[ch]
+				   || char_changes[ch]>=candidates[cn,2]
+				   || is.na(match(br,pabm[ch,])))	{
+				cn <- cn+1
+				ch <- candidates[cn,1]
+				}	# make sure that this is an appropriate character
+			# determine shifts
+			if (states[ch]==2)	{
+				dstates <- c(1,0)
+				} else if (types[ch]==0)	{
+				dstates <- scramble_multistates(states[ch])	
+				} 
+			# routine for tips
+			if (br<=notu)	{
+				if (simchmatrix[br,ch]!=UNKNOWN && simchmatrix[br,ch]!=INAP)	{
+					cc <- simchmatrix[br,ch]
+					simchmatrix[br,ch] <- dstates[cc+1]
+					} else {
+					ndg <- br-notu
+					for (d in 1:length(subset(venn_tree[ndg,],venn_tree[ndg,]>0)))	{
+						sp <- venn_tree[ndg,d]
+						if (simchmatrix[sp,ch]!=UNKNOWN && simchmatrix[sp,ch]!=INAP)	simchmatrix[sp,ch] <- dstates[1+simchmatrix[sp,ch]]
+						}	
+					}
+				#change_character_on_branch(ch,branchings[b])
+				}
+			branch_changes[br] <- 1
+			char_changes[ch] <- char_changes[ch]+1
+			# now, flip over branches
+			pabm[ch,candidates[cn,2]] <- pabm[ch,char_changes[ch]]
+			pabm[ch,char_changes[ch]] <- br
+			}	# end case where branch needed changes
+		}
+	}
+#third, tally compatibility at this point
+delta <- sum(char_changes);
+simcompmat <- compatibility_matrix(simchmatrix,states,types,UNKNOWN,INAP,fuzzy);
+character_compats <- rowSums(simcompmat)-1;
+simcompat[delta] <- sum(character_compats)/2;
+#simcompat[delta] <- total_compatibility(simchmatrix,nchars,states,types,notu,UNKNOWN,INAP)
+steps_v_compat <- c(delta,simcompat[delta]);
+if (repl>0)	print(c(repl,delta,simcompat[delta]));
+
+counter <- 0
+for (d in (delta+1):N)	{
+	counter <- counter+1
+	# add the br != 0 check!!!
+	br <- 0
+	while (br==0)	{
+		ch <- ceiling(nchars*runif(1))
+		while (ch>nchars || char_changes[ch]>=mx_ch[ch])	ch <- ceiling(nchars*runif(1))
+		c <- char_changes[ch]+1
+		br <- pabm[ch,c]
+		}
+	
+	if (states[ch]==2)	{
+		dstates <- c(1,0)       # this is a transition matrix: 0->1, 1->0
+		} else if (types[ch]==0)	{
+		dstates <- scramble_multistates(states[ch])	# this transition matrix will have either 0->1+1->2+2->0 or 0->2+1->0+2->1 for a 3 state character
+		} 
+#	prior_compat <- compatibility_of_a_character <- (ch1,simchmatrix,nchars,states,types,notu,UNKNOWN,INAP)
+	prior_compat <- simcompmat[ch,]
+	
+	if (br<=notu)	{
+		if (simchmatrix[br,ch]!=UNKNOWN && simchmatrix[br,ch]!=INAP)	{
+			simchmatrix[br,ch] <- dstates[1+simchmatrix[br,ch]]
+			} else {
+			ndh <- br-notu
+			for (d in 1:length(subset(venn_tree[ndh,],venn_tree[ndh,]>0)))	{
+				sp <- venn_tree[ndh,d]
+				if (simchmatrix[sp,ch]!=UNKNOWN && simchmatrix[sp,ch]!=INAP)	simchmatrix[sp,ch] <- dstates[1+simchmatrix[sp,ch]]
+				}	
+			}
+		#change_character_on_branch(ch,branchings[b])
+		}
+	# new vector of compatibilities
+	new_compat <- compatibility_of_a_character(ch,simchmatrix,states,types,UNKNOWN,INAP)
+
+	# update compatibility matrix
+	# tally new matrix compatibility
+	#simcompat[d] <- (sum(simcompmat)-nchars)/2
+	dcompat <- sum(new_compat - prior_compat)
+	simcompat[d] <- simcompat[d-1]+dcompat
+#	simcompat[d] <- simcompat[d-1]-(sum(prior_compat)-sum(new_compat))
+	if (repl>0 && counter%%10==0)	print(c(repl,d,simcompat[d]))
+	steps_v_compat <- rbind(steps_v_compat,c(d,simcompat[d]))
+	branch_changes[br] <- branch_changes[br]+1
+	char_changes[ch] <- char_changes[ch]+1
+	if (sum(prior_compat==new_compat)!=nchars)	{
+		simcompmat[ch,] <- new_compat
+		simcompmat[,ch] <- new_compat
+		for (c2 in 1:nchars)	{
+			if (new_compat[c2]!=prior_compat[c2])	{
+				if (new_compat[c2]==0)	{
+					character_compats[c2] <- character_compats[c2]-1
+					} else if (new_compat[c2]==1)	{
+					character_compats[c2] <- character_compats[c2]+1
+					}
+				}	# case of mismatch
+			}	# modify compatibility matrix of cha}racters affected by change
+		}
+	}
+#output <- list(d,simcompmat)
+rownames(steps_v_compat) <- rep("",nrow(steps_v_compat));
+colnames(steps_v_compat) <- c("Steps","Compat")
+return (steps_v_compat)
+}
+
+evolve_N_steps_on_tree <- function(N,init_chmatrix,venn_tree,branchings,nchars,states,types,hidden_reversals=TRUE,UNKNOWN=-11,INAP=-22,repl=1)	{
+# N: maximum number of steps
+# venn_tree: a tree giving all of the observed descendants (direct & indirect)
+# branchings: length of each branch
+# nchars: number of characters
+# states: number of states for each character
+# types: types for each character (0: unordered; 1: ordered)
+# hidden_reversals: if true, then character can change 2+ times per sampled branch
+# UNKNOWN: numeric code for "?"
+# INAP: numeric code for "-"
+# repl: replication number
+notu <- ncol(venn_tree);	# number of observed taxa in tree
+nodes <- nrow(venn_tree);
+#simchmatrix <- matrix(0,notu,nchars)
+simchmatrix <- init_chmatrix;
+simchmatrix[simchmatrix>0] <- 0	# added 2017-08-10
+# get those branches where there can be change (sampled ancestors are zero, with nodal branch ≥ 1)
+unique_ab <- (1:length(branchings))[branchings>0]
+#ab <- vector(length=branches)		# available branches, with branches with 2+ species listed 2+ times
+
+# each branch gets one additional representative per unsampled ancestor.
+# 		With perfect sampling, all taxa are entered once.
+ab <- c()
+for (b in 1:length(unique_ab))	{
+	br <- unique_ab[b]
+	ab <- c(ab,rep(br,branchings[br]))
+	}
+tb <- sum(branchings)
+fb <- length(unique_ab)		# free branches, with each branch that can change listed only once
+bcc <- matrix(0,nchars,fb)	# branch changes per character
+st_rich <- matrix(0,nchars,max(states))	# richness of each state
+
+mx_ch <- count_scored_otu_per_character(chmatrix=simchmatrix)
+
+rich <- vector(length=nodes)
+for (n in 1:nodes)  rich[n] <- sum(venn_tree[n,]>0)
+# for (n in 1:nodes)  rich[n] <- length(subset(venn_tree[n,],venn_tree[n,]>0))
+pabm <- get_possible_branches_for_all_characters(simchmatrix,branchings,ab,venn_tree) # possible available branches matrix
+pcc <- vector(length=nchars)  # possible character changes
+for (ch in 1:nchars)  {
+	# scramble order in which branches are sampled
+	if (hidden_reversals==TRUE)	{
+		x <- permute(subset(pabm[ch,],pabm[ch,]>0))
+		}	else	{
+		x <- unique(permute(subset(pabm[ch,],pabm[ch,]>0)))
+		}
+	pcc[ch] <- length(x)
+	pabm[ch,1:pcc[ch]] <- x
+	}
+
+# first, make sure that all states appear
+branch_changes <- vector(length=notu+nodes)
+char_changes <- vector(length=nchars)
+simcompat <- vector(length=N)
+for (ch in 1:nchars)	{
+	if (states[ch]>=2)	{
+    	use_br <- sort(pabm[ch,1:(states[ch]-1)],decreasing=TRUE)   # do high nodes first, then low nodes, then otus
+		for (c in 1:(states[ch]-1))	{
+			br <- use_br[c]
+			if (br<=notu)	{
+				simchmatrix[br,ch] <- c
+				} else {
+				ndd <- br-notu
+				for (r in 1:rich[ndd])	{
+					s <- venn_tree[ndd,r]
+					if (simchmatrix[s,ch]==0)	simchmatrix[s,ch] <- c
+					}
+				}
+			char_changes[ch] <- 1+char_changes[ch]
+			branch_changes[br] <- branch_changes[br]+1
+			}	# add state c to matrix
+		}	# only do variant characters
+	}
+
+simstates <- vector(length=nchars)
+for (ch in 1:nchars)	simstates[ch] <- sum(unique(simchmatrix[,ch])>=0)
+
+# makes sure that all branches have 1+ change
+# branch_changes[unique(ab)]
+#  PUT THIS ROUTINE IN OTHER MODULES!
+if (sum(branch_changes[unique_ab]==0)>0)	{
+	needy <- unique(ab)[branch_changes[unique(ab)]==0]
+	nb <- length(needy)
+	for (b in 1:nb)	{
+		# get first branch in need of a change
+		br <- needy[b]
+		# target characters where it would change earliest
+		candidates <- which(pabm==br,arr.ind=TRUE)
+		cn <- 1
+		ch <- candidates[cn,1]
+		while (states[ch]<2
+			   || char_changes[ch]>=mx_ch[ch]
+			   || char_changes[ch]>=candidates[cn,2]
+			   || is.na(match(br,pabm[ch,])))	{
+			cn <- cn+1
+			ch <- candidates[cn,1]
+			}	# make sure that this is an appropriate character
+		# determine shifts
+		if (states[ch]==2)	{
+			dstates <- c(1,0)
+			} else if (types[ch]==0)	{
+			dstates <- scramble_multistates(states[ch])	
+			} 
+		# routine for tips
+		if (br<=notu)	{
+			if (simchmatrix[br,ch]!=UNKNOWN && simchmatrix[br,ch]!=INAP)	{
+				cc <- simchmatrix[br,ch]
+				simchmatrix[br,ch] <- dstates[cc+1]
+				} else {
+				ndg <- br-notu
+				for (d in 1:length(subset(venn_tree[ndg,],venn_tree[ndg,]>0)))	{
+					sp <- venn_tree[ndg,d]
+					if (simchmatrix[sp,ch]!=UNKNOWN && simchmatrix[sp,ch]!=INAP)	simchmatrix[sp,ch] <- dstates[1+simchmatrix[sp,ch]]
+					}	
+				}
+			#change_character_on_branch(ch,branchings[b])
+			}
+		branch_changes[br] <- 1
+		char_changes[ch] <- char_changes[ch]+1
+		# now, flip over branches
+		pabm[ch,candidates[cn,2]] <- pabm[ch,char_changes[ch]]
+		pabm[ch,char_changes[ch]] <- br
+		}	# end case where branch needed changes
+	}
+#third, tally compatibility at this point
+delta <- sum(char_changes)
+simcompmat <- compatibility_matrix(simchmatrix,states,types,UNKNOWN,INAP)
+character_compats <- rowSums(simcompmat)-1
+simcompat[delta] <- sum(character_compats)/2
+#simcompat[delta] <- total_compatibility(simchmatrix,nchars,states,types,notu,UNKNOWN,INAP)
+steps_v_compat <- c(delta,simcompat[delta])
+if (repl>0)	print(c(repl,delta,simcompat[delta]))
+
+counter <- 0
+for (d in (delta+1):N)	{
+	counter <- counter+1
+	# add the br != 0 check!!!
+	br <- 0
+	while (br==0)	{
+		ch <- ceiling(nchars*runif(1))
+		while (ch>nchars || char_changes[ch]>=mx_ch[ch])	ch <- ceiling(nchars*runif(1))
+		c <- char_changes[ch]+1
+		br <- pabm[ch,c]
+		}
+	
+	if (states[ch]==2)	{
+		dstates <- c(1,0)       # this is a transition matrix: 0->1, 1->0
+		} else if (types[ch]==0)	{
+		dstates <- scramble_multistates(states[ch])	# this transition matrix will have either 0->1+1->2+2->0 or 0->2+1->0+2->1 for a 3 state character
+		} 
+#	prior_compat <- compatibility_of_a_character <- (ch1,simchmatrix,nchars,states,types,notu,UNKNOWN,INAP)
+	prior_compat <- simcompmat[ch,]
+	
+	if (br<=notu)	{
+		if (simchmatrix[br,ch]!=UNKNOWN && simchmatrix[br,ch]!=INAP)	{
+			simchmatrix[br,ch] <- dstates[1+simchmatrix[br,ch]]
+			} else {
+			ndh <- br-notu
+			for (d in 1:length(subset(venn_tree[ndh,],venn_tree[ndh,]>0)))	{
+				sp <- venn_tree[ndh,d]
+				if (simchmatrix[sp,ch]!=UNKNOWN && simchmatrix[sp,ch]!=INAP)	simchmatrix[sp,ch] <- dstates[1+simchmatrix[sp,ch]]
+				}	
+			}
+		#change_character_on_branch(ch,branchings[b])
+		}
+	# new vector of compatibilities
+	new_compat <- compatibility_of_a_character(ch,simchmatrix,states,types,UNKNOWN,INAP)
+
+	# update compatibility matrix
+	# tally new matrix compatibility
+	#simcompat[d] <- (sum(simcompmat)-nchars)/2
+	dcompat <- sum(new_compat - prior_compat)
+	simcompat[d] <- simcompat[d-1]+dcompat
+#	simcompat[d] <- simcompat[d-1]-(sum(prior_compat)-sum(new_compat))
+	if (repl>0 && counter%%10==0)	print(c(repl,d,simcompat[d]))
+	steps_v_compat <- rbind(steps_v_compat,c(d,simcompat[d]))
+	branch_changes[br] <- branch_changes[br]+1
+	char_changes[ch] <- char_changes[ch]+1
+	if (sum(prior_compat==new_compat)!=nchars)	{
+		simcompmat[ch,] <- new_compat
+		simcompmat[,ch] <- new_compat
+		for (c2 in 1:nchars)	{
+			if (new_compat[c2]!=prior_compat[c2])	{
+				if (new_compat[c2]==0)	{
+					character_compats[c2] <- character_compats[c2]-1
+					} else if (new_compat[c2]==1)	{
+					character_compats[c2] <- character_compats[c2]+1
+					}
+				}	# case of mismatch
+			}	# modify compatibility matrix of cha}racters affected by change
+		}
+	}
+#output <- list(d,simcompmat)
+return (simchmatrix);
+}
+
+scramble_multistates <- function(nstates)	{
+dstates <- vector(length=nstates)
+for (i in 1:nstates)	dstates[i]<-i-1
+for (i in 1:nstates)	{
+	p <- i+ceiling((nstates-i)*runif(1))
+	q <- dstates[i]
+	dstates[i]<-dstates[p]
+	dstates[p]<-q
+	}
+return(dstates)
+}
+
+#### Graphics ####
+center_budding_phylogeny <- function(vector_tree,durations,sampled_ancestors)	{
+# function to get relative positions of lineages on a phylogeny;
+venn_tree <- transform_vector_tree_to_venn_tree(vector_tree);
+mtree <- transform_vector_tree_to_matrix_tree(vector_tree);
+node_richness <- tally_node_richness_from_vector_tree(vector_tree = vector_tree);
+nNode <- nrow(mtree);
+notu <- length(vector_tree)-nNode;
+node_ages <- c();
+if (nrow(durations)==(notu+nNode))	{
+	branch_ages <- durations[,1];
+	} else	{
+	for (nd in 1:nNode)	node_ages <- c(node_ages,min(durations[venn_tree[nd,venn_tree[nd,]>0],1]));
+	branch_ages <- c(durations[1:notu,1],node_ages);
+	}
+if (length(sampled_ancestors) < (notu+nNode))
+	sampled_ancestors <- c(rep(0,notu),sampled_ancestors);
+
+ttl_richness <- c(rep(1,notu),node_richness);
+##patristic_distances <- accersi_patristic_distance_from_base(atree=mtree);#max_nodes <- max(patristic_distances);
+
+last_left <- "left";	# move up the axis
+last_right <- "right";	# move down the axis
+accounted <- c();
+nd <- 0;
+phy_pos <- rep(0,nNode+notu);
+#for (nd in 1:nNode)	{
+while (nd < nNode)	{
+	nd <- nd+1;
+	htu <- nd+notu;			# htu number of node;
+	tf1 <- sum(mtree[nd,]>0);
+	if (sampled_ancestors[htu]!=0)	{
+		tf1 <- tf1-1;
+		phy_pos[sampled_ancestors[htu]] <- phy_pos[notu+nd];
+		}  
+	f1 <- mtree[nd,!mtree[nd,] %in% c(sampled_ancestors[htu],0)];
+	f1 <- f1[order(-ttl_richness[f1])];
+	if (length(f1)>2)	{
+		right <- left <- 0;
+		prop_richness <- ttl_richness[f1]/sum(ttl_richness[f1]);
+		f1cc <- length(f1);
+		left <- f1[1]; 
+		sum_prop <- prop_richness[1];
+		while (sum_prop <= 0.45)	{
+			sum_prop <- sum_prop+prop_richness[f1cc];
+			left <- c(left,f1[f1cc]);
+			f1cc <- f1cc-1;
+			}
+		right <- f1[!f1 %in% left];
+		right <- right[order(-abs(branch_ages[right]))];
+		left <- left[order(-abs(branch_ages[left]))];
+		# shift rest of the tree away from ancestral node
+#		phy_pos[phy_pos<phy_pos[htu]] <- phy_pos[phy_pos<phy_pos[htu]]-sum(ttl_richness[right]);
+#		phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]]+sum(ttl_richness[left]);
+		rr <- 1;
+		phy_pos[phy_pos<phy_pos[htu]] <- phy_pos[phy_pos<phy_pos[htu]]-ttl_richness[right[rr]]
+		phy_pos[right[rr]] <- phy_pos[htu]-ttl_richness[right[rr]];
+		while (rr < length(right))	{
+			rr <- rr+1;
+			if (sum(phy_pos<phy_pos[htu])>0)
+				phy_pos[phy_pos<phy_pos[htu]] <- phy_pos[phy_pos<phy_pos[htu]]-(2*ttl_richness[right[rr]]);
+#			phy_pos[right[rr]] <- (phy_pos[right[rr-1]]-ttl_richness[right[rr-1]])-ttl_richness[right[rr]];
+			phy_pos[right[rr]] <- phy_pos[htu]-ttl_richness[right[rr]];
+#			phy_pos[c(htu,right)];
+			}
+		ll <- 1;
+		phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]]+ttl_richness[left[ll]]
+#		phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]]+sum(ttl_richness[left[ll]]);
+		phy_pos[left[ll]] <- phy_pos[htu] + ttl_richness[left[ll]];
+		while (ll < length(left))	{
+			ll <- ll+1;
+			if (sum(phy_pos>phy_pos[htu])>0)
+				phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]]+(2*ttl_richness[left[ll]]);
+#			phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]]+2*ttl_richness[left[ll]]);
+#			phy_pos[left[ll]] <- (phy_pos[left[ll-1]]+ttl_richness[left[ll-1]])+ttl_richness[left[ll]];
+			phy_pos[left[ll]] <- phy_pos[htu]+ttl_richness[left[ll]];
+			}
+		}	else if (length(f1)==2)	{
+		f1 <- f1[order(-ttl_richness[f1])];
+		if (phy_pos[htu]<phy_pos[1+notu])	{
+			# going left is positive, so shift everything above this up by this amount
+			if (last_right=="right")	{
+				right <- f1[2];
+				left <- f1[1];
+				last_right <- "left"
+				} else	{
+				right <- f1[1];
+				left <- f1[2];
+				last_right <- "right"
+				}
+			} else	{
+			# going right is negative, so shift everything below this down by this amount
+			if (last_left=="left")	{
+				right <- f1[1];
+				left <- f1[2];
+				last_left <- "right";
+				} else	{
+				right <- f1[2];
+				left <- f1[1];
+				last_left <- "left";
+				}
+			}
+		# shift rest of the tree away from ancestral node
+		phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]] + ttl_richness[left];
+		phy_pos[phy_pos<phy_pos[htu]] <- phy_pos[phy_pos<phy_pos[htu]] - ttl_richness[right];
+		phy_pos[left] <- phy_pos[htu] + ttl_richness[left];
+		phy_pos[right] <- phy_pos[htu] - ttl_richness[right];
+		}	else if (length(f1)==1)	{
+		if (phy_pos[htu]<phy_pos[1+notu])	{
+			if (last_right=="right")	{
+				# going left is positive, so shift everything above this up by this amount
+#				phy_y[phy_y>(phy_y[htu]+ttl_richness[f1])] <- phy_y[phy_y>phy_y[htu]] + ttl_richness[f1];
+				# shift rest of the tree away from ancestral node
+				phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]] + ttl_richness[f1];
+				phy_pos[f1] <- phy_pos[htu] + ttl_richness[f1];
+				last_right <- "left";
+				} else {
+				# going right is negative, so shift everything below this down by this amount
+#				phy_y[phy_y<(phy_y[htu]-ttl_richness[f1])] <- phy_y[phy_y>ttl_richness[f1]] - ttl_richness[f1];
+				# shift rest of the tree away from ancestral node
+				phy_pos[phy_pos<phy_pos[htu]] <- phy_pos[phy_pos<phy_pos[htu]] - ttl_richness[f1];
+				phy_pos[f1] <- phy_pos[htu] - ttl_richness[f1];
+				last_right <- "right";
+				}
+			} else	{
+			if (last_left=="right")	{
+#				phy_y[phy_y>(phy_y[htu]+ttl_richness[f1])] <- phy_y[phy_y>phy_y[htu]] + ttl_richness[f1];
+				# shift rest of the tree away from ancestral node
+				phy_pos[phy_pos>phy_pos[htu]] <- phy_pos[phy_pos>phy_pos[htu]] + ttl_richness[f1];
+				phy_pos[f1] <- phy_pos[htu] + ttl_richness[f1];
+				last_left <- "left";
+				} else	{
+				# going right is negative, so shift everything below this down by this amount
+#				phy_y[phy_y<(phy_y[htu]-ttl_richness[f1])] <- phy_y[phy_y>ttl_richness[f1]] - ttl_richness[f1];
+				# shift rest of the tree away from ancestral node
+				phy_pos[phy_pos<phy_pos[htu]] <- phy_pos[phy_pos<phy_pos[htu]] - ttl_richness[f1];
+				phy_pos[f1] <- phy_pos[htu] - ttl_richness[f1];
+				last_left <- "right";
+				}
+			}
+		} 
+	
+	phy_pos <- phy_pos-phy_pos[notu+1];	# recenter around the base of the tree
+#	print(c(nd,phy_pos));
+	# now do species
+	accounted <- c(accounted,mtree[nd,mtree[nd,]>0]);
+	}
+final_pos <- match(phy_pos,sort(unique(phy_pos)));
+needed_edits <- hist(final_pos,breaks=0:max(final_pos),plot=F)$counts
+too_many_here <- (1:length(needed_edits))[needed_edits>2];
+while (length(too_many_here)>0) {
+	ttl_minions <- 1:(notu+nNode);
+	tmh <- 0;
+	while (tmh < length(too_many_here))	{
+		tmh <- tmh+1;
+		problems <- ttl_minions[final_pos==too_many_here[tmh]];	# taxa overlapping each other
+		these_nodes <- c();
+		for (pp in 1:length(problems))
+			these_nodes <- c(these_nodes,which(mtree==problems[pp],arr.ind = T)[1]);	# get the nodes containing problem cases;
+		problem_ancestors <- problems[(notu+these_nodes) %in% problems];				# separate out sampled ancestors
+		problem_ancestors_htu <- notu+these_nodes[match(problem_ancestors,problems)];	# keep track of the htu to which they belong, however!
+		these_nodes <- these_nodes[!problems %in% problem_ancestors];
+		problems <- problems[!problems %in% problem_ancestors];	# remove sampled ancestors for now
+		starting_points <- final_pos[notu+these_nodes];			# positions of ancestral nodes/taxa
+		adjust2 <- adjust <- starting_points-too_many_here[tmh];
+		adjust2[adjust<0]<- -(length(adjust[adjust<0]):1);
+		adjust2[adjust>0]<- 1:length(adjust[adjust>0]);
+		final_pos[final_pos<too_many_here[tmh]] <- final_pos[final_pos<too_many_here[tmh]]+min(adjust2);
+		final_pos[final_pos>too_many_here[tmh]] <- final_pos[final_pos>too_many_here[tmh]]+max(adjust2);
+		phy_pos[phy_pos<phy_pos[problems[1]]] <- phy_pos[phy_pos<phy_pos[problems[1]]]+min(adjust2);
+		phy_pos[phy_pos>phy_pos[problems[1]]] <- phy_pos[phy_pos>phy_pos[problems[1]]]+max(adjust2);
+		final_pos[problems] <- final_pos[problems]+adjust;
+		phy_pos[problems] <- phy_pos[problems]+adjust2;
+		final_pos[problem_ancestors] <- final_pos[problem_ancestors_htu];
+		phy_pos[problem_ancestors] <- phy_pos[problem_ancestors_htu];
+		too_many_here <- too_many_here+max(adjust2);
+		}
+	final_pos <- match(phy_pos,sort(unique(phy_pos)));
+	needed_edits <- hist(final_pos,breaks=0:max(final_pos),plot=F)$counts
+	too_many_here <- (1:length(needed_edits))[needed_edits>2]
+	}
+return(final_pos);
+}
+
+accersi_draw_phylogeny_coordinates <- function(ctree,durations,sampled_ancestors)	{
+notu <- match(-1,ctree)-1;
+if (nrow(durations)==notu)	{
+	all_durations <- rbind(durations,durations[sampled_ancestors,]);
+	} else	{
+	all_durations <- durations;
+	}
+phylo_axis <- center_budding_phylogeny(ctree,durations,sampled_ancestors);
+branch_axis <- vector(length=length(ctree));
+#branch_spans[ctree>0] <- phylo_axis[ctree>0];
+nNode <- max(ctree) - notu;
+original_taxon <- c(rep(0,notu),sampled_ancestors);
+mtree <- transform_vector_tree_to_matrix_tree(ctree);
+for (nn in 1:nNode)	{
+	htu <- notu+nn;
+	f1 <- mtree[nn,!mtree[nn,] %in% c(0,sampled_ancestors[nn])];
+	branch_axis[f1] <- phylo_axis[htu];
+	if (nn>1 && sampled_ancestors[nn]!=0)	{
+		branch_axis[sampled_ancestors[nn]] <- phylo_axis[ctree[htu]];
+		} else if (sampled_ancestors[nn]!=0)	{
+		branch_axis[sampled_ancestors[nn]] <- phylo_axis[sampled_ancestors[nn]];
+		branch_axis[htu] <- phylo_axis[nn];
+		}
+#	for (f in 1:length(f1))
+#		segments(durations[f1[f],1]-adj_y,phylo_axis[f1[f]],durations[f1[f],1]-adj_y,phylo_axis[n],lwd=1);
+#	nn <- nn-1;
+	}
+phylogeny_coordinates <- data.frame(phylo_axis=as.numeric(phylo_axis),branch_axis=as.numeric(branch_axis),origin=as.numeric(all_durations[,1]),extinction=as.numeric(all_durations[,2]),original_taxon=as.numeric(original_taxon));
+return(phylogeny_coordinates);
+}
+
+draw_calibrated_phylogeny <- function(ctree,finds,durations,phylo_axis,apomorphies,orientation="vertical",taxon_labels="",otu_cols,lazarus_col="gray50",plot_stratigraphy="no",branching_col="black",lineage_lwd=4,branching_lwd=2,new_plot=F,height=4,width=6)	{
+# working as of 2019-07-10
+# draws phylogeny onto an already configured plot or makes a new one
+# ctree: vector giving the node (htu) number to which each taxon or node is attached; -1 signifies the base of the tree.
+# plot_stratigraphy: default is "n"; if "range" or "ranges", it plots those
+notu <- match(-1,ctree)-1;
+durations <- -abs(durations);
+finds <- -abs(finds);
+if (plot_stratigraphy=="ranges" || plot_stratigraphy=="range")	{
+	strat_ranges <- data.frame(FAD=as.numeric(rep(0,notu)),LAD=as.numeric(rep(0,notu)),stringsAsFactors = F);
+	for (n in 1:notu)	{
+		if (sum(finds[n,]!=0)>0)	{
+			strat_ranges$FAD[n] <- min(finds[n,finds[n,]!=0]);
+			strat_ranges$LAD[n] <- max(finds[n,finds[n,]!=0]);
+			}
+		}
+	}
+
+# get ancestral species that obviate "ghost taxon" nodes
+sampled_ancestors <- accersi_poss_ancestors_for_nodes(vector_tree=ctree,FA=durations[,1],apomorphies);
+
+if (length(otu_cols)==1)
+	otu_cols <- rep(otu_cols,notu);
+
+if (new_plot)	{
+	mxz <- -abs(0.5*ceiling(min(abs(durations))/0.5));
+	mnz <- -abs(0.5*ceiling(max(abs(durations))/0.5));
+	if (abs(mxz-mnz) <= 25)	{
+		maj_break <- 1;
+		} else if (abs(mxz-mnz) <= 50)	{
+		maj_break <- 5;
+		} else if (abs(mxz-mnz) <= 200)	{
+		maj_break <- 10;
+		} else	{
+		maj_break <- 25;
+		}
+	med_break <- maj_break/2;
+	min_break <- maj_break/10;
+	if (orientation=="vertical")	{
+		par(pin=c(width,height));
+		plot(NA,type='n',axes=FALSE,main="",xlab="",ylab="Time",ylim=c(mnz,mxz),xlim=c(1,max(phylo_axis)));
+		specified_axis(axe=2,max_val=mxz,min_val=mnz,maj_break,med_break,min_break,linewd=4/3,orient=2,print_label=TRUE);
+		} else	{
+		par(pin=c(height,width));
+		plot(NA,type='n',axes=FALSE,main="",xlab="Time",ylab="",xlim=c(mnz,mxz),ylim=c(1,max(phylo_axis)));
+		specified_axis(axe=1,max_val=mxz,min_val=mnz,maj_break,med_break,min_break,linewd=4/3,orient=1,print_label=TRUE);
+		}
+	}
+
+#if (nrow(durations)==notu)
+#	durations <- rbind(durations,durations[sampled_ancestors[(notu+1):length(ctree)],])
+adj_z <- (mxz-mnz)*0.0025;
+nNode <- max(ctree) - notu;
+mtree <- transform_vector_tree_to_matrix_tree(ctree);
+
+nn <- nNode;
+gotcha <- vector(length=length(ctree));
+for (nn in nNode:1)	{
+	# draw lines from ancestor to descendants
+	n <- notu+nn;
+	if (orientation=="horizontal")	{
+		segments(durations[n,1],phylo_axis[n],durations[n,2],phylo_axis[n],lwd=lineage_lwd,col=branching_col);
+		if (sampled_ancestors[n]==0)	{
+			segments(durations[n,1],phylo_axis[n],durations[n,2],phylo_axis[n],lwd=0.75*lineage_lwd,col=lazarus_col);
+			gotcha[n] <- 1;
+			}
+		} else	{
+		segments(phylo_axis[n],durations[n,1],phylo_axis[n],durations[n,2],lwd=lineage_lwd,col=branching_col);
+		if (sampled_ancestors[n]==0)	{
+			segments(phylo_axis[n],durations[n,1],phylo_axis[n],durations[n,2],lwd=0.75*lineage_lwd,col=lazarus_col);
+			gotcha[n] <- 1;
+			}
+		}
+	f1 <- mtree[nn,!mtree[nn,] %in% c(0,sampled_ancestors[n])];
+	for (f in 1:length(f1))	{
+		if (orientation=="horizontal")	{
+			segments(durations[f1[f],1]-adj_z,phylo_axis[f1[f]],durations[f1[f],1]-adj_z,phylo_axis[n],lwd=branching_lwd,col=branching_col);
+			if (gotcha[f1[f]]==0)
+				segments(durations[f1[f],1],phylo_axis[f1[f]],durations[f1[f],2],phylo_axis[f1[f]],lwd=lineage_lwd,col=branching_col);
+			} else	{
+			segments(phylo_axis[f1[f]],durations[f1[f],1]-adj_z,phylo_axis[n],durations[f1[f],1]-adj_z,lwd=branching_lwd,col=branching_col);
+			if (gotcha[f1[f]]==0)
+				segments(phylo_axis[f1[f]],durations[f1[f],1],phylo_axis[f1[f]],durations[f1[f],2],lwd=lineage_lwd,col=branching_col);
+			}
+		gotcha[f1[f]] <- 1;
+		}
+#	nn <- nn-1;
+	}
+n <- 1;
+for (n in 1:notu)	{
+	if (orientation=="horizontal")	{
+		segments(durations[n,1],phylo_axis[n],durations[n,2],phylo_axis[n],lwd=0.75*lineage_lwd,col=otu_cols[n]);
+		} else	{
+		segments(phylo_axis[n],durations[n,1],phylo_axis[n],durations[n,2],lwd=0.75*lineage_lwd,col=otu_cols[n]);
+		}
+#	n <- 1+n;
+	}
+}
+
+add_fossil_finds_to_already_drawn_phylogeny <- function(phylo_axis,finds,sampling_col="orange",find_size=0.75,orientation="vertical")	{
+ntu <- nrow(finds);
+finds <- -abs(finds);
+if (length(sampling_col)==1)
+	sampling_col <- rep(sampling_col,ntu);
+finds <- -abs(finds);
+for (nn in 1:ntu)	{
+	nn_finds <- finds[nn,finds[nn,]!=0];
+	i <- 0;
+	while (i < length(nn_finds))	{
+		i <- i+1;
+		if (orientation=="vertical")	{
+			points(phylo_axis[nn],nn_finds[i],pch=21,bg=sampling_col[nn],cex=find_size,lwd=find_size);
+			} else	{
+			points(nn_finds[i],phylo_axis[nn],pch=21,bg=sampling_col[nn],cex=find_size,lwd=find_size);
+			}
+		}
+	}
+}
+
+add_stratigraphic_ranges_to_already_drawn_phylogeny_old <- function(phylo_axis,strat_ranges,sampling_col="orange",lineage_lwd=4,orientation="vertical")	{
+ntu <- sum(strat_ranges[,1]!=0);
+if (length(sampling_col)==1)
+	sampling_col <- rep(sampling_col,ntu);
+strat_ranges <- -abs(strat_ranges);
+for (nn in 1:ntu)	{
+	if (strat_ranges[nn,1]!=0)	{
+		if (orientation=="vertical")	{
+			segments(phylo_axis[nn],strat_ranges[nn,1],phylo_axis[nn],strat_ranges[nn,2],lwd=0.75*lineage_lwd,col=sampling_col[nn]);
+			} else	{
+			segments(strat_ranges[nn,1],phylo_axis[nn],strat_ranges[nn,2],phylo_axis[nn],lwd=0.75*lineage_lwd,col=sampling_col[nn]);
+			}
+		}
+	}
+}
+
+add_stratigraphic_ranges_to_already_drawn_phylogeny <- function(phylo_axis,strat_ranges,sampling_col="orange",lineage_lwd=4,orientation="vertical")	{
+ntu <- nrow(strat_ranges);
+if (length(sampling_col)==1)
+	sampling_col <- rep(sampling_col,ntu);
+strat_ranges <- -abs(strat_ranges);
+for (nn in 1:ntu)	{
+	if (strat_ranges[nn,1]!=0)	{
+		if (orientation=="vertical")	{
+			segments(phylo_axis[nn],strat_ranges[nn,1],phylo_axis[nn],strat_ranges[nn,2],lwd=0.75*lineage_lwd,col=sampling_col[nn]);
+			} else	{
+			segments(strat_ranges[nn,1],phylo_axis[nn],strat_ranges[nn,2],phylo_axis[nn],lwd=0.75*lineage_lwd,col=sampling_col[nn]);
+			}
+		}
+	}
+}
+
+draw_calibrated_branch_durations_only <- function(ctree,finds,durations,phylo_axis,apomorphies,orientation="vertical",sampling_col="orange",lazarus_col="gray50",branching_col="black",lineage_lwd=4,branching_lwd=2,plot_first_find=T,height=6,width=6,find_size=0.75)	{
+# working as of 2019-07-10
+# draws phylogeny onto an already configured plot or makes a new one
+# ctree: vector giving the node (htu) number to which each taxon or node is attached; -1 signifies the base of the tree.
+notu <- match(-1,ctree)-1;
+durations <- -abs(durations);
+finds <- -abs(finds);
+# remember to restore this!!!! 
+sampled_ancestors <- accersi_poss_ancestors_for_nodes(vector_tree=ctree,FA=durations[,1],apomorphies);
+
+if (plot_first_find && length(sampling_col)==1)
+	sampling_col <- rep(sampling_col,notu);
+#if (nrow(durations)==notu)
+#	durations <- rbind(durations,durations[sampled_ancestors[(notu+1):length(ctree)],])
+adj_z <- (mxz-mnz)*0.0025;
+nNode <- max(ctree) - notu;
+mtree <- transform_vector_tree_to_matrix_tree(ctree);
+
+for (nn in nNode:1)	{
+	htu <- nn+notu;
+	if (sampled_ancestors[htu]==0)	{
+		f1 <- mtree[nn,!mtree[nn,] %in% c(0,sampled_ancestors[n])];
+		phylo_axis[htu] <- mean(phylo_axis[f1]);
+		}
+	}
+
+for (nn in nNode:1)	{
+	n <- notu+nn;
+	f1 <- mtree[nn,!mtree[nn,] %in% c(0,sampled_ancestors[n])];
+	for (f in 1:length(f1))	{
+		if (orientation=="horizontal")	{
+			segments(durations[f1[f],1]-adj_z,phylo_axis[f1[f]],durations[f1[f],1]-adj_z,phylo_axis[n],lwd=branching_lwd,col=branching_col);
+			} else	{
+			segments(phylo_axis[f1[f]],durations[f1[f],1]-adj_z,phylo_axis[n],durations[f1[f],1]-adj_z,lwd=branching_lwd,col=branching_col);
+			}
+		}
+	}
+
+n <- 0;
+while (n < notu)	{
+	n <- n+1;
+	if (orientation=="horizontal")	{
+		segments(durations[n,1],phylo_axis[n],durations[n,2],phylo_axis[n],col=lazarus_col,lwd=lineage_lwd);
+		} else	{
+		segments(phylo_axis[n],durations[n,1],phylo_axis[n],finds[n,1],col=lazarus_col,lwd=lineage_lwd);
+		}
+	if (plot_first_find)
+		points(phylo_axis[n],finds[n,1],pch=21,bg=sampling_col[n],cex=find_size,lwd=find_size);
+	}
+
+nn <- nNode;
+while (nn > 0)	{
+	nn <- nn-1;
+	htu <- nn+notu;
+	if (sampled_ancestors[htu]==0)	{
+		f1 <- mtree[nn,!mtree[nn,] %in% c(0,sampled_ancestors[n])];
+		phylo_axis[htu] <- mean(phylo_axis[f1]);
+		if (orientation=="horizontal")	{
+			segments(durations[htu,1],mean(phylo_axis[f1]),durations[htu,2],mean(phylo_axis[f1]),col=lazarus_col,lwd=lineage_lwd);
+			} else	{
+			segments(mean(phylo_axis[f1]),durations[htu,2],mean(phylo_axis[f1]),durations[htu,1],col=lazarus_col,lwd=lineage_lwd);
+			}
+		}
+	}
+
+#return();
+}
+
+specified_axis <- function(axe,max_val,min_val,maj_break,med_break,min_break,linewd=4/3,orient=1,print_label=TRUE)	{
+axis(axe,at=seq(min_val,max_val,by=max_val-min_val),tcl=-0.0,labels = FALSE,lwd=linewd,las=orient)
+if ((min_val/maj_break)-floor(min_val/maj_break)<(10^-10))	{
+	# this is a kluge necessitated by tiny rounding errors....
+	mnv1 <- min_val
+	} else	{
+	mnv1 <- (maj_break*ceiling(min_val/maj_break))
+	}
+ticks <- old_ticks <- seq(mnv1,max_val,by=maj_break)
+axis(axe,at=ticks,tcl=-0.30,labels=print_label,lwd=0.0,lwd.ticks=linewd,las=orient)
+if (med_break!=0)	{
+	mnv2 <- (med_break*ceiling(min_val/med_break))
+	ticks <- seq(mnv2,max_val,by=med_break)[!seq(mnv2,max_val,by=med_break) %in% old_ticks]
+	if (min_break!=0)	{
+		tck_sz <- -0.20
+		} else	tck_sz <- -0.15
+	axis(axe,at=ticks,tcl=tck_sz,labels=FALSE,lwd=0.0,lwd.ticks=linewd,las=orient)
+	old_ticks <- sort(c(ticks,old_ticks))
+	}
+if (min_break!=0)	{
+	ticks <- seq(min_val,max_val,by=min_break)[!seq(min_val,max_val,by=min_break) %in% old_ticks]
+	if (med_break!=0)	{
+		tck_sz <- -0.10
+		} else	tck_sz <- -0.15
+	axis(axe,at=ticks,tcl=tck_sz,labels=FALSE,lwd=0.0,lwd.ticks=linewd,las=orient)
+	}
+}
+
+#### Matrix Analyses ####
+accersi_maximum_parsimony_steps_per_character <- function(chmatrix,states)	{
+# routine to get the maximum number of steps for a character on a minimum steps tree.
+#	This assumes a star-phylogeny (zero resolution) where one state is ancestral
+#		and all other states are derived n times given n otus with that state
+ncharss <- length(states)
+max_steps <- vector(length=ncharss)
+for (c in 1:ncharss)	{
+	scored <- sum(chmatrix[,c]>=0)
+	max_shared <- 0
+	for (s in 0:states[c])	{
+		x <- sum(chmatrix[,c]==s)
+		if (max_shared < x)	max_shared <- x
+		}
+	max_steps[c] <- scored - max_shared
+	}
+return(max_steps)
+}
+
+count_scored_otu_per_character <- function(chmatrix,UNKNOWN=-11,INAP=-22)	{
+nch <- dim(chmatrix)[2]
+notu <- dim(chmatrix)[1]
+scored <- vector(length=nch)
+for (c in 1:nch)
+	scored[c] <- notu - (sum(chmatrix[,c]==UNKNOWN)+sum(chmatrix[,c]==INAP))
+return(scored)
+}
+
+reduce_to_unique_pairs <- function (ch1, ch2, st1, st2, UNKNOWN, INAP)	{
+# written by Peter Wagner & Peter D Smits
+#' Find the swing between three adjacent state pairs
+#'
+#' When determining compatibility between unordered multistate characters it is 
+#' necessary to determine the position of the swing pair when there are three 
+#' observed. This function is used internally.
+#'
+#' @param pa 3x2 matrix of state pairs
+#' @param u1 state identities (values) of the first column
+#' @param u2 state identities (values) of the second column
+charpair <- cbind(ch1,ch2)
+# Remove pairs with unknowns or inapplicables: they do not count
+if (any(charpair == UNKNOWN) || any(charpair == INAP) || any(charpair < 0)) {
+	rmz <- which(charpair == UNKNOWN | charpair == INAP | charpair < 0, arr.ind = T)[, 1]
+	charpair <- charpair[-rmz, ]
+	}
+# reduce pairs to unique ones.  Then sort on first then second column  ADDED 2017-05-31
+charpair <- unique(charpair)
+pair_order <- c()
+for (i in 1:nrow(charpair))	{
+	pair_order <- c(pair_order,1+(charpair[i,1]*st2)+charpair[i,2])
+	}
+charpair <- charpair[order(pair_order),]
+# get all of the pairs that we have
+return (charpair)
+}
+
+find_swing_pairs <- function (pa, u1, u2) {
+# written by Peter Wagner & Peter D Smits
+#' Find the swing between three adjacent state pairs
+#'
+#' When determining compatibility between unordered multistate characters it is 
+#' necessary to determine the position of the swing pair when there are three 
+#' observed. This function is used internally.
+#'
+#' @param pa 3x2 matrix of state pairs
+#' @param u1 state identities (values) of the first column
+#' @param u2 state identities (values) of the second column
+if (any(pa[, 1] == u1[1] & pa[, 2] == u2[1]) & any(pa[, 1] == u1[2] & pa[, 2] == u2[2])) {
+	# heterogeneous swing
+	# one of the maxes and one of the mins
+	# can't be both
+	p1 <- ifelse(sum(pa[, 1] == u1[1]) > sum(pa[, 1] == u1[2]), 1, 2)
+	p2 <- ifelse(sum(pa[, 2] == u2[1]) > sum(pa[, 2] == u2[2]), 1, 2)
+    swing <- pa[pa[, 1] == u1[p1] & pa[, 2] == u2[p2], ]
+    }	else {
+	# homogeneous swing
+	# either both of the maxes or both of the mins
+	# can't be both
+	o <- list()
+	o[[1]] <- pa[, 1] == max(u1) & pa[, 2] == max(u2)
+	o[[2]] <- pa[, 1] == min(u1) & pa[, 2] == min(u2)
+	y <- ifelse(any(o[[1]]), 1, 2)
+	swing <- pa[o[[y]], ]
+	}
+return(swing)
+}
+
+pair_compatibility <- function(ch1,ch2,st1,st2,t1,t2,UNKNOWN=-11,INAP=-22) {
+# written by Peter Wagner & Peter D Smits
+#' pair compatibility
+#'
+#' Calculate the compatibility between any two unordered characters. 
+#' Compatibility is a tree-free method of determining the plausibility 
+#' of of two characters having evolved with homoplasy. This function does this 
+#' as a hybrid of various methods devised in the 80s to account for any 
+#' number of character states for unordered characters.
+#'
+#' @param ch1 either a vector of scored states for a character or a two column 
+#' matrix representing two characters
+#' @param ch2 a vector of scored states for a character. optional if ch1 is a 
+#' two column matrix.
+#' @param st1 number of states in the first character (optional)
+#' @param st2 number of states in the second character (optional)
+#' @param t1 type of the first character (0 = unordered/binary, 1 = ordered) 
+#' DOES NOTHING. DO NOT CHANGE
+#' @param t2 type of the second character
+#' @param UNKNOWN value of unknown character state scores
+#' @param INAP value of inapplicable character state scores
+#' @keywords
+#' @export
+#' @examples
+  #  Returns:
+  #    value of 0 or 1
+  #    0 is incompatible
+  #    1 is compatible
+  
+  # make sure the input is in the right format
+  # weirdness?
+comp <- 1
+if (!missing(ch2) && identical(length(dim(ch1)), 1)) {
+	stop("ch2 exists but ch1 is not a 1-d vector! one or the other please")
+	}
+  # ch1 is a pair?
+if (missing(ch2) && identical(dim(ch1)[2], 2)) {
+	charpair <- ch1
+	}	else if (missing(ch2) && !identical(dim(ch1)[2], 2))	{
+	stop("char pair is not of the right shape. 2 column matrix please.")
+	}
+# ch1 and ch2 both exist? are they the same length?
+if (!missing(ch2) && identical(length(ch1), length(ch2))) {
+	charpair <- cbind(ch1, ch2)
+	} else if (!missing(ch2) && !identical(length(ch1), length(ch2))) {
+	stop("ch1 and ch2 are not of equal length")
+	}
+  
+# handle states
+if (missing(st1)) st1 <- max(charpair[, 1]) + 1
+if (missing(st2)) st2 <- max(charpair[, 2]) + 1
+  
+# Remove pairs with unknowns or inapplicables: they do not count
+if (any(charpair == UNKNOWN) || any(charpair == INAP)) {
+	rmz <- which(charpair == UNKNOWN | charpair == INAP, arr.ind = T)[, 1]
+	charpair <- charpair[-rmz, ]
+	}
+  
+# get all of the pairs that we have
+all.pairs <- unique(charpair)
+
+# this is relevant only if there are 3+ pairs!
+if (is.matrix(all.pairs))	{
+	# binary is really easy.
+	if (st1 <= 2 && st2 <= 2) {
+		comp <- ifelse(nrow(all.pairs) > 3, 0, 1)
+		}	else if (st1 == 1 || st2 == 1)	{
+    	comp <- 1
+  		} else {  # multistate
+  	# all state pair combinations
+  		sp1 <- combn(st1, 2) - 1
+  		sp2 <- combn(st2, 2) - 1
+    
+    # if ordered multistate
+    	if (t1 == 1)
+    		sp1 <- sp1[, sp1[1, ] == sp1[2, ] - 1]
+    	if (t2 == 1)
+    		sp2 <- sp2[, sp2[1, ] == sp2[2, ] - 1]
+
+    	pai <- c() # one of the few times you need to intialize
+    	swing <- matrix(, ncol = 2);
+    	for (ii in seq(ncol(sp1))) {
+    		for (jj in seq(ncol(sp2))) {
+    			c1 <- which(all.pairs[, 1] == sp1[1, ii] | 
+                    all.pairs[, 1] == sp1[2, ii], 
+                    arr.ind = T)
+    			c2 <- which(all.pairs[, 2] == sp2[1, jj] | 
+                    all.pairs[, 2] == sp2[2, jj], 
+                    arr.ind = T)
+    			pa <- all.pairs[intersect(c1, c2), ]
+    			p <- nrow(as.matrix(pa))
+    			n <- ifelse(p > 3, 0, 1)
+    			pai <- c(pai, n)
+    			if (any(c(t1, t2) == 0) & p == 3) {
+    				u1 <- sp1[, ii]
+    				u2 <- sp2[, jj]
+    				swing <- na.omit(rbind(swing, find_swing_pairs(pa, u1, u2)))
+    				}
+    			}
+    		}
+    	circuit <- FALSE
+    	if (any(c(t1, t2) == 0) & nrow(swing) > 3) {
+    		swing <- unique(swing)
+    		state.diagram <- matrix(0, nrow = st1, ncol = st2)
+    		state.diagram[swing + 1] <- 1
+    		ci <- state.diagram
+    		if (any(rowSums(state.diagram) < 2) | any(colSums(state.diagram) < 2)) {
+    			ci <- state.diagram[rowSums(state.diagram) >= 2, 
+                            colSums(state.diagram) >= 2]
+      			}
+    		circuit <- (sum(ci) == sum(state.diagram)) | 
+    			(sum(ci) %% 2 == 0 && sum(ci) >= 4)
+    		}
+    	comp <- ifelse(any(pai == 0), 0, 1)
+    	comp <- ifelse(circuit, 0, comp)
+  		}
+	}
+return(comp)
+}
+
+pair_compatibility_fuzzy <- function(ch1,ch2,st1,st2,t1,t2,UNKNOWN=-11,INAP=-22) {
+  #  Returns:
+  #    value of 0 or 1
+  #    0 is incompatible
+  #    1 is compatible
+  
+  # make sure the input is in the right format
+  # weirdness?
+if (st2 > st1)	{
+	chd <- ch1;
+	td <- t1;
+	std <- st1;
+	ch1 <- ch2;
+	t1 <- t2;
+	st1 <- st2;
+	ch2 <- chd;
+	t2 <- td;
+	st2 <- std;
+	}
+comp <- 1;
+if (!missing(ch2) && identical(length(dim(ch1)), 1)) {
+	stop("ch2 exists but ch1 is not a 1-d vector! one or the other please");
+	}
+  # ch1 is a pair?
+if (missing(ch2) && identical(dim(ch1)[2], 2)) {
+	charpair <- ch1;
+	}	else if (missing(ch2) && !identical(dim(ch1)[2], 2))	{
+	stop("char pair is not of the right shape. 2 column matrix please.");
+	}
+
+# ch1 and ch2 both exist? are they the same length?
+if (!missing(ch2) && identical(length(ch1), length(ch2))) {
+	charpair <- cbind(ch1, ch2);
+	} else if (!missing(ch2) && !identical(length(ch1), length(ch2))) {
+	stop("ch1 and ch2 are not of equal length");
+	}
+  
+# handle states
+if (missing(st1)) st1 <- max(charpair[, 1]) + 1;
+if (missing(st2)) st2 <- max(charpair[, 2]) + 1;
+  
+# Remove pairs with unknowns or inapplicables: they do not count
+if (any(charpair == UNKNOWN) || any(charpair == INAP)) {
+	rmz <- which(charpair == UNKNOWN | charpair == INAP, arr.ind = T)[, 1];
+	charpair <- charpair[-rmz, ];
+	}
+  
+# get all of the pairs that we have
+all_pairs <- unique(charpair);
+all_pairs[,1] <- match(all_pairs[,1],sort(unique(all_pairs[,1])))-1;
+all_pairs[,2] <- match(all_pairs[,2],sort(unique(all_pairs[,2])))-1;
+
+pair_tests_1 <- c();
+for (cs1 in 1:(st1-1))	for (cs2 in (cs1+1):st1)	pair_tests_1 <- cbind(pair_tests_1,c(cs1-1,cs2-1));
+pair_tests_2 <- c();
+for (cs1 in 1:(st2-1))	for (cs2 in (cs1+1):st2)	pair_tests_2 <- cbind(pair_tests_2,c(cs1-1,cs2-1));
+
+compatible_subset <- comparable_subset <- c();
+for (cp1 in 1:ncol(pair_tests_1))	{
+	relv_pairs_1 <- (1:nrow(all_pairs))[all_pairs[,1] %in% pair_tests_1[,cp1]]
+	for (cp2 in 1:ncol(pair_tests_2))	{
+		relv_pairs_2 <- (1:nrow(all_pairs))[all_pairs[,2] %in% pair_tests_2[,cp2]]
+		relv_pairs <- relv_pairs_1[relv_pairs_1 %in% relv_pairs_2];
+		comparable_subset <- c(comparable_subset,ifelse (length(relv_pairs)>1,1,0));
+		compatible_subset <- c(compatible_subset,ifelse ((length(relv_pairs)>1 && length(relv_pairs)<4),1,0));
+		}
+	}
+
+return(c(sum(compatible_subset),sum(comparable_subset)));
+}
+
+compatibility_matrix <- function(chmatrix,states,types,UNKNOWN=-11,INAP=-22,fuzzy=F)	{
+#	chmatrix: matrix of characters
+#	types: 0 for unordered, 1 for ordered
+#	fuzzy: if "true", then multistate characters will get compatibilities calculated for multiple breakdowns
+#	e.g.: 00 10 11  00 02 12
+nchars <- ncol(chmatrix);
+comp_matrix <- matrix(0,nchars,nchars);
+for (c1 in 1:(nchars-1))  {
+	comp_matrix[c1,c1] <- 1;
+	ch1 <- chmatrix[,c1];
+	st1 <- states[c1];
+	t1 <- types[c1];
+	for (c2 in (c1+1):nchars)	{
+		ch2 <- chmatrix[,c2];
+		st2 <- states[c2];
+		t2 <- types[c2];
+		if (fuzzy)	{
+			pair_comp <- pair_compatibility_fuzzy(ch1,ch2,st1,st2,t1,t2,UNKNOWN,INAP);
+			if (pair_comp[2]>0)	{
+				comp_matrix[c2,c1] <- comp_matrix[c1,c2] <- pair_comp[1]/pair_comp[2];
+				} else	{
+				comp_matrix[c2,c1] <- comp_matrix[c1,c2] <- 0.5;
+				}
+			} else	{
+			comp_matrix[c2,c1] <- comp_matrix[c1,c2] <- pair_compatibility(ch1,ch2,st1,st2,t1,t2,UNKNOWN,INAP);
+			}
+		}
+#	c1 <- c1+1
+	}
+comp_matrix[nchars,nchars] <- 1;
+return (comp_matrix)
+}
+
+# get the compatibility of a single character with all others
+compatibility_of_a_character <- function(c1,chmatrix,states,types,UNKNOWN=-11,INAP=-22)	{
+nch <- length(states)
+character_compatibility <- vector(length=nch)
+for (c2 in 1:nch)  {
+	if (c2==c1)  {
+		character_compatibility[c1] <- 1
+		} else {
+		character_compatibility[c2] <- pair_compatibility(chmatrix[,c1],chmatrix[,c2],st1=states[c1],st2=states[c2],t1=types[c1],t2=types[c2],UNKNOWN,INAP)
+#		 <- character_compatibility[c2]+c
+		}
+	}
+return(character_compatibility)
+}
+
+pairwise_dissimilarity <- function(chmatrix,states,types,weight_ordered=TRUE,polymorphs=TRUE,UNKNOWN=-11,INAP=-22)	{
+#	uchmatrix: matrix of characters
+#	types: 0 for unordered, 1 for ordered
+uchmatrix <- unique(chmatrix)
+unotu <- nrow(uchmatrix)
+nchars <- ncol(uchmatrix)
+udis_matrix <- matrix(0,unotu,unotu)
+for (sp1 in 1:(unotu-1))	{
+#	print(sp1)
+	udis_matrix[sp1,sp1] <- 0.0
+	for (sp2 in (sp1+1):unotu)	{
+		diss <- num <- 0	# diss: # differences; num: number of comparisons
+		for (ch in 1:nchars)	{
+			if (((uchmatrix[sp1,ch]!=UNKNOWN && uchmatrix[sp1,ch]!=INAP) && (uchmatrix[sp2,ch]!=UNKNOWN && uchmatrix[sp2,ch]!=INAP)))	{
+				num <- num+1
+				if (uchmatrix[sp1,ch]!=uchmatrix[sp2,ch])	{
+					## different with single scored states
+					if (uchmatrix[sp1,ch]>=0 && uchmatrix[sp2,ch]>=0)	{
+						if (types[ch]==0 || states[ch]==2)	{
+							diss <- diss+1
+							} else {
+							if (weight_ordered==FALSE)	{
+								x <- abs(uchmatrix[sp1,ch]-uchmatrix[sp2,ch])
+								} else if (weight_ordered==TRUE)	{
+								x <- abs(uchmatrix[sp1,ch]-uchmatrix[sp2,ch])/(states[ch]-1)
+								}
+							diss <- diss+x
+							}	# end case of ordered character
+						} else { # end case of two non-polymorphsics
+						if (uchmatrix[sp1,ch]<0)	{
+							cvec1 <- unravel_polymorph(uchmatrix[sp1,ch])
+							} else {
+							cvec1 <- uchmatrix[sp1,ch]
+							}
+						if (uchmatrix[sp2,ch]<0)	{
+							cvec2 <- unravel_polymorph(uchmatrix[sp2,ch])
+							} else {
+							cvec2 <- uchmatrix[sp2,ch]	
+							}
+						if (length(cvec1)<=length(cvec2))	{
+							# numerator is # matches; denominator is # poss. matches
+							x <- sum(cvec2 %in% cvec1)/length(cvec2)
+#							x <- match(cvec1,cvec2)
+#							if (length(cvec1)==1 && is.na(x))	{
+#								diss <- diss+1
+#								} else if (length(cvec1)>1)	{
+#								x <- clear_na_from_vector(x,-1)
+#								for (q in 1:length(x))	if (x[q]==-1)	diss <- diss+1/(length(x))
+#								}
+							}	else {
+							# numerator is # matches; denominator is # poss. matches
+							x <- sum(cvec1 %in% cvec2)/length(cvec1)
+#							x <- match(cvec2,cvec1)		# pick up here!
+#							if (length(cvec2)==1 && is.na(x))	{
+#								diss <- diss+1
+#								} else if (length(cvec2)>1)	{
+#								x <- clear_na_from_vector(x,-1)
+#								for (q in 1:length(x))	if (x[q]==-1)	diss <- diss+1/(length(x))
+#								}
+							}			
+						} # end case of 1 or 2 polymorphsics
+					} # end case of disagreement
+				} # end case of two coded characters
+			}	# end going through characters
+		udis_matrix[sp2,sp1] <- udis_matrix[sp1,sp2] <- diss/num
+		}	# end comparison between sp2 & sp1
+	}	#end going throuch species
+
+notu <- nrow(chmatrix)
+dis_matrix <- matrix(0,notu,notu)
+xxx <- prodlim::row.match(x=as.data.frame(chmatrix),table=as.data.frame(uchmatrix));
+for (u in 1:(unotu-1))	{
+	yyy <- (1:notu)[xxx %in% u]
+	for (u2 in 2:unotu)	{
+		zzz <- (1:notu)[xxx %in% u2]
+		dis_matrix[zzz,yyy] <- dis_matrix[yyy,zzz] <- udis_matrix[u,u2]
+		}
+	}
+return (dis_matrix)
+}
+
+extract_off_diagonal <- function(orig_matrix)	{
+offdiagonal <- c();
+for (a in 1:(nrow(orig_matrix)-1))
+	for (b in (a+1):nrow(orig_matrix))
+		offdiagonal <- c(offdiagonal,orig_matrix[a,b]);
+return(offdiagonal);
+}
+
+	##### Deal with Polymorphs #######
+switch_letter_state_to_numeric <- function(state)  {
+# 2017-10-09: now will pass numeric characters through unchanged
+# 2019-01-25: simplified greatly!
+if (state > 9)	{
+	state <- toupper(state)
+	poss_letter_states <- toupper(letters[!letters %in% c("i","o")]);
+	return(9+match(state,poss_letter_states));
+	} else	{
+	return(state);
+	}
+}
+
+ravel_polymorph <- function(polystates)	{
+polystates <- sort(polystates,decreasing = TRUE);
+polym <- polystates[1];
+for (st in 2:length(polystates))	polym <- (10*polym)+polystates[st]
+return(-1*polym)
+}
+
+ravel_polymorph_for_file <- function(polystates)	{
+polystates <- sort(polystates,decreasing = FALSE);
+return(paste("(",paste(polystates,collapse=""),")",sep=""));
+}
+
+# convert polytomies to individual states
+unravel_polymorph <- function(poly)	{
+combo <- -1*poly
+sts <- 1+floor(log10(abs(combo)))
+polymorphics <- vector(length=sts)
+
+base <- 10^(sts-1)
+for (s in 1:sts)	{
+	polymorphics[s] <- floor(abs(combo)/base)
+	combo <- combo%%base
+	base <- base/10
+	}
+return (polymorphics)
+}
+
+	##### Divergence Times #######
+accersi_unsampled_branch_durations <- function(reduced_history,strat_ranges_red)	{
+ctree <- reduced_history$vector_tree;								# vector tree giving cladogram for sampled species only
+sotu <- match(-1,ctree)-1;
+mtree <- transform_vector_tree_to_matrix_tree(ctree);
+ancestral_otus <- reduced_history$sampled_ancestral_otus;			# original taxon numbers of sampled ancestors
+observed_nodes_red <- reduced_history$observed_nodes_red;
+unobserved_nodes_red <- reduced_history$unobserved_nodes_red;
+sampled_ancestors_red <- c(ancestral_otus,rep(0,length(unobserved_nodes_red)));	# sampled otu numbers of nods
+sampled_ancestors_red <- sampled_ancestors_red[order(c(observed_nodes_red,unobserved_nodes_red))];
+durations_red <- -abs(reduced_history$durations);					# durations including those of unsampled ancestors
+#min_node_age <- vector(length=nrow(mtree));
+#dummy <- data.frame(FAD=as.numeric(rep(0,length(ctree)-sotu)),LAD=as.numeric(rep(0,length(ctree)-sotu)))
+dummy <- matrix(0,nrow=length(ctree)-sotu,ncol=2);
+colnames(dummy) <- colnames(strat_ranges_red);
+strat_ranges_red <- rbind(strat_ranges_red,dummy);
+#strat_ranges_red[observed_nodes_red,] <- strat_ranges_red[ancestral_otus,];
+range_extension <- signor_lipps <- jaanusson <- vector(length=length(ctree));
+nNodes <- nrow(mtree);
+for (nd in nNodes:1)	{
+	f1 <- mtree[nd,!mtree[nd,] %in% c(0,ancestral_otus)];
+	jaanusson[f1] <- strat_ranges_red[f1,1]-durations_red[f1,1];
+	if (sampled_ancestors_red[nd]!=0)	{
+		sll <- max(durations_red[f1,1]-strat_ranges_red[sampled_ancestors_red[nd],2]);
+		signor_lipps[sampled_ancestors_red[nd]] <- max(c(0,sll));
+		strat_ranges_red[nd+sotu,] <- strat_ranges_red[sampled_ancestors_red[nd],];
+		}
+	}
+output <- list(jaanusson,signor_lipps);
+names(output) <- c("jaanusson_lineages","signor_lipps_lineages");
+return(output);
+}

@@ -1,0 +1,26 @@
+{
+    "id": "FB6575FB",
+    "path": "~/Documents/R_Projects/Inverse_Modelling_with_Compatibility/Simulate_Phylogeny_and_Compatibility.r",
+    "project_path": "Simulate_Phylogeny_and_Compatibility.r",
+    "type": "r_source",
+    "hash": "3207324267",
+    "contents": "",
+    "dirty": false,
+    "created": 1623953847167.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "38,39",
+        "scrollLine": "29"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1623954402,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1623954402453,
+    "read_only": false,
+    "read_only_alternatives": []
+}

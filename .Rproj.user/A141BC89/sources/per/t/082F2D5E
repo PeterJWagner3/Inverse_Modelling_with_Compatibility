@@ -1,0 +1,26 @@
+{
+    "id": "082F2D5E",
+    "path": "~/Documents/R_Projects/Common_R_Source_Files/Wagner_R_Functions_for_Analytical_Class.r",
+    "project_path": null,
+    "type": "r_source",
+    "hash": "1255789527",
+    "contents": "",
+    "dirty": false,
+    "created": 1623954319827.0,
+    "source_on_save": false,
+    "relative_order": 4,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "2132,0",
+        "scrollLine": "2113"
+    },
+    "folds": "2124|75|2131|0|\n",
+    "lastKnownWriteTime": 1593030417,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1623954332158,
+    "read_only": false,
+    "read_only_alternatives": []
+}
