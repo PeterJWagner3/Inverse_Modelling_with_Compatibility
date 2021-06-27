@@ -173,4 +173,3 @@ if (is.na(n / (n - k - 1)) || (n / (n - k - 1)<0) || (n / (n - k - 1))==Inf)	{
 	}	else	aic_c <- (-2*lnL) + (2*k)*(n / (n - k - 1));
 return(aic_c);
 }
-
